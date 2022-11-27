@@ -8,10 +8,11 @@ void handleCaptive();
 
 
 const String apName = "ClockClock";
-const String apPassword = "et970004";
+const String apPassword = "vierundzwanzig";
 
 String wifiNetworkName = "momak_2.4";
 String wifiNetworkPassword = "et970004";
+bool isProtected = true;
 
 const byte DNS_PORT = 53;
 IPAddress apIP(172, 217, 28, 1);
@@ -28,35 +29,67 @@ const String styleHTML = R"rawliteral(
   p{text-align:center;}
   div{margin: 5%; background-color:#242424; padding:10px; border-radius:8px;}
   br{display: block; margin: 10px 0; line-height:22px; content: " ";}
-  label{text-align:left; padding:2%;}
-  input{border-radius: 4px; border: 2px solid #0056a8; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
-  input[type="submit"]{font-size: 25px; background-color:#0056a8; color:white; border-radius:8px; height:50px; width:95%;}
+  label{margin-left: 4%; margin-top: 2%; font-size: 22px;display: block;}
+  input[type="text"]{border-radius: 8px; border: 2px solid #0056a8; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
+  input[type="submit"]{font-size: 25px; background-color:#0056a8; color:white; padding 10px; border-radius:8px; height:50px; width:93%;display:block; margin-top:5%; margin-right:auto; margin-left:auto;}
+  .disable_section {pointer-events: none;opacity: 0.4;}
+  input[type="checkbox"]{width: 20px;height: 20px; vertical-align: middle;position: relative;bottom: 1px;}
   </style>
   </head>)rawliteral";
 
 const String captiveFormHTML = R"rawliteral(<body>
+    <body>
   <div>
     <h1>ClockClock</h1>
     <p>Geben sie die folgenden Daten ein um Ihre Uhr mit einem 2.4GHz WLAN-Netzwerk für Internet-Zeitsynchronisierung zu verbinden:</p>
+    <br>
+    <br>
     <form action="/credentials" method="POST">
-      <label>Wi-Fi Daten</label>
+      <label>Wi-Fi Daten:</label>
       <br>
       <input type="text" name="wifissid" id="wifissid" placeholder="Wi-Fi SSID">
       <br>
       <input type="text" name="wifipass" id="wifipass" placeholder="Wi-Fi Passwort">
+      <label style="font-size:16px;"><input type="checkbox" name="is_protected" id="is_protected" onclick="enablepassword()" checked/> Geschütztes Netzwerk?</label>
       <br>
       <input type="submit" value="Submit">
     </form><br>
   </div>
-</body></html>)rawliteral";
+</body>
+<script>
+function enablepassword() {
+  if (document.getElementById("is_protected").checked) {
+    document.getElementById("wifipass").classList.remove('disable_section')
+  } else {
+    document.getElementById("wifipass").classList.add('disable_section')
+  }
+}
+</script>
+</html>)rawliteral";
 
-
-const String captiveRedoHTML = R"rawliteral(<body>
+const String captiveSuccessHTML = R"rawliteral(<body>
   <div>
     <h1>ClockClock</h1>
-    <p>Daten Erfolgreich gepeichert, zum erneuten ändern den untensteheden Knoopf drücken:</p>
+    <p>Daten Erfolgreich gepeichert, zum erneuten ändern den "Anpassen" Knopf drücken:</p>
+    <p></p>
+    <p>SSID: *<*SSID*>*</p>
+    <p>Passwort: *<*PASS*>*</p>
+    <p>Geschützt: *<*PROT*>*</p>
+    <p></p>
     <form action="/" method="POST">
       <input type="submit" value="Anpassen">
+    </form><br>
+  </div>
+</body></html>)rawliteral";
+
+const String captiveErrorHTML = R"rawliteral(<body>
+  <div>
+    <h1>ClockClock</h1>
+    <p>Beim speichern der Daten ist ein Fehler aufgetreten. (*<*Error*>*):</p>
+    <p></p>
+    <p></p>
+    <form action="/" method="POST">
+      <input type="submit" value="Erneut Versuchen">
     </form><br>
   </div>
 </body></html>)rawliteral";
@@ -88,22 +121,45 @@ void startCaptivePortal() {
 }
 
 void handleCredentials(){
-  Serial.println("I got dems credentials");
+  String msg = captiveSuccessHTML;
 
   if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass")){
     Serial.println(webServer.arg("wifissid"));
     Serial.println(webServer.arg("wifipass"));
+    Serial.println(webServer.arg("is_protected"));
 
-    //display a webpage with a confirmation that shows the set wifi ssid and password
-    //and a button to change them again
+    if((webServer.hasArg("is_protected") && webServer.arg("wifipass").length() >= 8) || !webServer.hasArg("is_protected")){
+      if(webServer.arg("wifissid").length() <= 32){
+        isProtected = webServer.hasArg("wifipass");
+        wifiNetworkName = webServer.arg("wifissid");
+        wifiNetworkPassword = webServer.arg("is_protected");
 
-    //make a string with style that get combined with a body so less space is used
+        if (webServer.hasArg("is_protected")){
+          msg.replace("*<*PROT*>*", "Ja");
+        }else{
+          msg.replace("*<*PROT*>*", "Nein");
+          String a = R"rawliteral(<p>Passwort: *<*PASS*>*</p>)rawliteral";
+          msg.replace(a, "");
+        }
+        msg.replace("*<*SSID*>*", webServer.arg("wifissid"));
+        msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
+      }
+      else{
+        msg = captiveErrorHTML;
+        msg.replace("*<*Error*>*", "SSID sollte weniger als 32 Zeichen haben");
+      }
+    }
+    else{
+      msg = captiveErrorHTML;
+      msg.replace("*<*Error*>*", "Passwort muss mehr als 7 Zeichen haben");
+    }
   }
   else{
-    Serial.println("nopers");
+    msg = captiveErrorHTML;
+    msg.replace("*<*Error*>*", "Unbekannter Fehler");
   }
 
-  webServer.send(200, "text/html", (styleHTML + captiveRedoHTML));
+  webServer.send(200, "text/html", (styleHTML + msg));
 }
 
 void handleCaptive(){
