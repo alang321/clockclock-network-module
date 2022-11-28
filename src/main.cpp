@@ -3,11 +3,22 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Wire.h>
-#include <RP2040_RTC.h>
+#include <PicoEspTime.h>
+#include <lwip/apps/sntp.h>
+#include <EEPROM.h>
 
 void startCaptivePortal();
 void handleCredentials();
 void handleCaptive();
+void startNtpPoll();
+void cancelNtpPoll();
+void begin_ntp(IPAddress s1, IPAddress s2, int timeout = 3600);
+void PrintTime();
+void writeStringToEEPROM(int addrOffset, const String &strToWrite);
+String readStringFromEEPROM(int addrOffset);
+void saveCredsEEPROM();
+void readCredsEEPROM();
+void resetData();
 
 //i2c handlers
 void i2c_receive(int numBytesReceived);
@@ -17,22 +28,40 @@ const int I2C_SDA_PIN = 15;
 const int I2C_SCL_PIN = 16;
 const int I2C_ADDRESS = 40;
 
+const int ADDRESS_SSID = 1;
+const int ADDRESS_PASS= 70;
+const int ADDRESS_PROT = 140;
+
 const String ACCESS_POINT_NAME = "ClockClock";
 const String ACCESS_POINT_PASSWORD = "vierundzwanzig";
 
-String wifiNetworkName = "momak_2.4";
-String wifiNetworkPassword = "et970004";
-bool isProtected = true;
+
+const String DEFAULT_WIFI_NAME = "Wifi";
+const String DEFAULT_WIFI_PASS = "12345678";
+const bool DEFAULT_WIFI_PROTECTED = false;
+
+String wifiNetworkName;
+String wifiNetworkPassword;
+bool isProtected;
 
 const byte DNS_PORT = 53;
 IPAddress apIP(172, 217, 28, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-cmd_enable_ap_data enable_ap_data;
-cmd_poll_ntp_struct_data poll_ntp_data;
+bool enbable_ap_flag = false;
+bool ap_enabled = false;
 
-datetime_t currTime = { 2022, 1, 21, 5, 5, 0, 0 };
+
+NTPClass ntp_service;
+bool start_poll_flag = false;
+bool polling_ntp = false;
+bool cancel_ntp_poll_flag = false;
+bool poll_successfull = false;
+time_t poll_starttime = 0;
+uint16_t poll_timeout = 60;
+
+PicoEspTime rtc;
 
 #pragma region i2c command datastructs
 
@@ -45,6 +74,9 @@ struct cmd_enable_ap_data {
 struct cmd_poll_ntp_data {
   uint16_t ntp_timeout; //2bytes, timeout in s
 };
+
+cmd_enable_ap_data enable_ap_data;
+cmd_poll_ntp_data poll_ntp_data;
 
 #pragma endregion
 
@@ -130,26 +162,65 @@ const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
 #pragma region setup and loop
 
 void setup() {
+  //todo load ssid password and if protected from flash
+
   Serial.begin(9600);
   Serial.println("test");
-  startCaptivePortal();
+
+  EEPROM.begin(256);
+  readCredsEEPROM();
 
   //Initialize as i2c slave
-  Wire.setSCL(I2C_SCL_PIN);
-  Wire.setSDA(I2C_SDA_PIN);  
+  //Wire.setSCL(I2C_SCL_PIN);
+  //Wire.setSDA(I2C_SDA_PIN);  
   //Wire.setClock(100000);  breaks the i2c bus for some reason
-  Wire.begin(I2C_ADDRESS); 
-  Wire.onReceive(i2c_receive);
-  Wire.onRequest(i2c_request);
-
-  rtc_init();
-  rtc_set_datetime(&currTime);
+  //Wire.begin(I2C_ADDRESS); 
+  //Wire.onReceive(i2c_receive);
+  //Wire.onRequest(i2c_request);
+  startNtpPoll();
 }
 
 void loop() {
-  dnsServer.processNextRequest();
-  webServer.handleClient();
+  delay(1000);
+  Serial.println("loop");
+
+
+  if(cancel_ntp_poll_flag){
+    cancel_ntp_poll_flag = false;
+    cancelNtpPoll();
+  }
+
+  if (ap_enabled){
+    dnsServer.processNextRequest();
+    webServer.handleClient();
+  }
+  else if (polling_ntp){
+    //todo, handle timeouts, overflow save millis webpage
+    if(WiFi.status() == WL_CONNECTED){
+      if(!ntp_service.running()){
+        ntp_service.begin("pool.ntp.org", "time.nist.gov");
+        Serial.println("starting sntp service");
+      }
+      
+      Serial.println(time(nullptr));//todo use poll_starttime for detection of timeout
+      if(time(nullptr) > (poll_starttime + poll_timeout + 60)){ //if timesetting has occured
+        poll_successfull = true;
+        Serial.println("Succesfully polled");
+        rtc.read();
+        PrintTime();
+        cancelNtpPoll();
+      }
+    }
+    if(time(nullptr) > (poll_starttime + poll_timeout)){
+      cancelNtpPoll();
+    }
+  }
 }
+
+void PrintTime()
+{ 
+  Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));
+} 
 
 #pragma endregion
 
@@ -160,19 +231,18 @@ void i2c_receive(int numBytesReceived) {
   Wire.readBytes((byte*) &cmd_id, 1);
 
   byte i2c_buffer[numBytesReceived - 1];
-  
-  Wire.readBytes((byte*) &i2c_buffer, numBytesReceived - 1);
-  if (cmd_id == 0){
-    enable_ap_data = &i2c_buffer;
-  }else{
-    poll_ntp_data = &i2c_buffer;
+
+  if (cmd_id == enable_ap){
+    Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
+  }else if (cmd_id == poll_ntp){
+    Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
   }
 }
 
 void i2c_request() {
-  rtc_get_datetime(&currTime);
-  
+  //todo implement 4 bytes sent, valid, hour, minute, second
   Wire.write(1);
+  cancelNtpPoll();
 }
 
 #pragma endregion
@@ -180,6 +250,7 @@ void i2c_request() {
 #pragma region captive portal
 
 void startCaptivePortal() {
+  ap_enabled = true;
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP(ACCESS_POINT_NAME, ACCESS_POINT_PASSWORD);
@@ -195,6 +266,7 @@ void startCaptivePortal() {
 }
 
 void stopCaptivePortal() {
+  ap_enabled = false;
   WiFi.mode(WIFI_OFF);
   dnsServer.stop();
   webServer.stop();
@@ -209,10 +281,10 @@ void handleCredentials(){
     Serial.println(webServer.arg("is_protected"));
 
     if((webServer.hasArg("is_protected") && webServer.arg("wifipass").length() >= 8) || !webServer.hasArg("is_protected")){
-      if(webServer.arg("wifissid").length() <= 32){
+      if(webServer.arg("wifissid").length() <= 32 && webServer.arg("wifipass").length() <= 32){
         isProtected = webServer.hasArg("wifipass");
-        wifiNetworkName = webServer.arg("wifissid");
-        wifiNetworkPassword = webServer.arg("is_protected");
+        wifiNetworkName = (char*)webServer.arg("wifissid").c_str();
+        wifiNetworkPassword = (char*)webServer.arg("is_protected").c_str();
 
         if (webServer.hasArg("is_protected")){
           msg.replace("*<*PROT*>*", "Ja");
@@ -223,10 +295,12 @@ void handleCredentials(){
         }
         msg.replace("*<*SSID*>*", webServer.arg("wifissid"));
         msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
+
+        saveCredsEEPROM();
       }
       else{
         msg = CAPTIVE_ERROR_HTML;
-        msg.replace("*<*Error*>*", "SSID sollte weniger als 32 Zeichen haben");
+        msg.replace("*<*Error*>*", "SSID und Passwort sollten je weniger als 33 Zeichen haben");
       }
     }
     else{
@@ -244,6 +318,92 @@ void handleCredentials(){
 
 void handleCaptive(){
   webServer.send(200, "text/html", (STYLE_HTML + CAPTIVE_FORM_HTML));
+}
+
+#pragma endregion
+
+#pragma region ntp polling
+
+void startNtpPoll() {
+  ntp_service = NTPClass();
+  poll_successfull = false;
+  polling_ntp = true;
+  rtc.adjust(0, 0, 0, 2010, 1,1);
+  poll_starttime = time(nullptr);
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname("ClockClockNTPService");
+
+  int name_len = wifiNetworkName.length() + 1;
+  char name[name_len];
+  wifiNetworkName.toCharArray(name, name_len);
+
+  int pass_len = wifiNetworkPassword.length() + 1;
+  char pass[pass_len];
+  wifiNetworkPassword.toCharArray(pass, pass_len);
+
+  if(isProtected){
+    WiFi.begin(name, pass);
+  }else{
+    WiFi.begin(name);
+  }
+}
+
+void cancelNtpPoll() {
+  polling_ntp = false;
+  sntp_stop(); //stops the sntp service used by NTPClass
+  WiFi.mode(WIFI_OFF);
+}
+
+#pragma endregion
+
+#pragma region eeprom
+
+void writeStringToEEPROM(int addrOffset, const String &strToWrite)
+{
+  byte len = strToWrite.length();
+  EEPROM.write(addrOffset, len);
+  for (int i = 0; i < len; i++)
+  {
+    EEPROM.write(addrOffset + 1 + i, strToWrite[i]);
+  }
+}
+
+String readStringFromEEPROM(int addrOffset)
+{
+  int newStrLen = EEPROM.read(addrOffset);
+  char data[newStrLen + 1];
+  for (int i = 0; i < newStrLen; i++)
+  {
+    data[i] = EEPROM.read(addrOffset + 1 + i);
+  }
+  data[newStrLen] = '\0'; // !!! NOTE !!! Remove the space between the slash "/" and "0" (I've added a space because otherwise there is a display bug)
+  return String(data);
+}
+
+void saveCredsEEPROM()
+{
+  Serial.println(("wrote to eeprom  " + wifiNetworkName + "  " + wifiNetworkPassword + "  " + String(isProtected)));
+  writeStringToEEPROM(ADDRESS_SSID, wifiNetworkName);
+  writeStringToEEPROM(ADDRESS_PASS, wifiNetworkPassword);
+  EEPROM.write(ADDRESS_PROT, isProtected);
+
+  EEPROM.commit();
+}
+
+void readCredsEEPROM()
+{
+  wifiNetworkName = readStringFromEEPROM(ADDRESS_SSID);
+  wifiNetworkPassword = readStringFromEEPROM(ADDRESS_PASS);
+  isProtected = (bool)EEPROM.read(ADDRESS_PROT);
+  Serial.println(("read from eeprom  " + wifiNetworkName + "  " + wifiNetworkPassword + "  " + String(isProtected)));
+}
+
+void resetData()
+{
+  wifiNetworkName = DEFAULT_WIFI_NAME;
+  wifiNetworkPassword = DEFAULT_WIFI_PASS;
+  isProtected = DEFAULT_WIFI_PROTECTED;
+  saveCredsEEPROM();
 }
 
 #pragma endregion
