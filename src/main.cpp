@@ -105,6 +105,8 @@ void loop() {
   webServer.handleClient();
 }
 
+
+
 void startCaptivePortal() {
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
@@ -118,6 +120,12 @@ void startCaptivePortal() {
   webServer.on("/credentials", HTTP_POST, handleCredentials);
   webServer.onNotFound(handleCaptive);
   webServer.begin();
+}
+
+void stopCaptivePortal() {
+  WiFi.mode(WIFI_OFF);
+  dnsServer.stop();
+  webServer.stop();
 }
 
 void handleCredentials(){
