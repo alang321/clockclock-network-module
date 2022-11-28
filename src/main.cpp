@@ -1,14 +1,24 @@
+#include <Arduino.h>
 #include <DNSServer.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Wire.h>
+#include <RP2040_RTC.h>
 
 void startCaptivePortal();
 void handleCredentials();
 void handleCaptive();
 
+//i2c handlers
+void i2c_receive(int numBytesReceived);
+void i2c_request();
 
-const String apName = "ClockClock";
-const String apPassword = "vierundzwanzig";
+const int I2C_SDA_PIN = 15;
+const int I2C_SCL_PIN = 16;
+const int I2C_ADDRESS = 40;
+
+const String ACCESS_POINT_NAME = "ClockClock";
+const String ACCESS_POINT_PASSWORD = "vierundzwanzig";
 
 String wifiNetworkName = "momak_2.4";
 String wifiNetworkPassword = "et970004";
@@ -19,7 +29,28 @@ IPAddress apIP(172, 217, 28, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-const String styleHTML = R"rawliteral(
+cmd_enable_ap_data enable_ap_data;
+cmd_poll_ntp_struct_data poll_ntp_data;
+
+datetime_t currTime = { 2022, 1, 21, 5, 5, 0, 0 };
+
+#pragma region i2c command datastructs
+
+enum cmd_identifier {enable_ap = 0, poll_ntp = 1};
+
+struct cmd_enable_ap_data {
+  bool enable; //1bytes # true enables the acces point for configuration, false disables it
+};
+
+struct cmd_poll_ntp_data {
+  uint16_t ntp_timeout; //2bytes, timeout in s
+};
+
+#pragma endregion
+
+#pragma region html
+
+const String STYLE_HTML = R"rawliteral(
 <!DOCTYPE HTML><html><head>
   <title>ClockClock</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -37,7 +68,7 @@ const String styleHTML = R"rawliteral(
   </style>
   </head>)rawliteral";
 
-const String captiveFormHTML = R"rawliteral(<body>
+const String CAPTIVE_FORM_HTML = R"rawliteral(<body>
     <body>
   <div>
     <h1>ClockClock</h1>
@@ -67,7 +98,7 @@ function enablepassword() {
 </script>
 </html>)rawliteral";
 
-const String captiveSuccessHTML = R"rawliteral(<body>
+const String CAPTIVE_SUCCESS_HTML = R"rawliteral(<body>
   <div>
     <h1>ClockClock</h1>
     <p>Daten Erfolgreich gepeichert, zum erneuten ändern den "Anpassen" Knopf drücken:</p>
@@ -82,7 +113,7 @@ const String captiveSuccessHTML = R"rawliteral(<body>
   </div>
 </body></html>)rawliteral";
 
-const String captiveErrorHTML = R"rawliteral(<body>
+const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
   <div>
     <h1>ClockClock</h1>
     <p>Beim speichern der Daten ist ein Fehler aufgetreten. (*<*Error*>*):</p>
@@ -94,10 +125,25 @@ const String captiveErrorHTML = R"rawliteral(<body>
   </div>
 </body></html>)rawliteral";
 
+#pragma endregion
+
+#pragma region setup and loop
+
 void setup() {
   Serial.begin(9600);
   Serial.println("test");
   startCaptivePortal();
+
+  //Initialize as i2c slave
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.setSDA(I2C_SDA_PIN);  
+  //Wire.setClock(100000);  breaks the i2c bus for some reason
+  Wire.begin(I2C_ADDRESS); 
+  Wire.onReceive(i2c_receive);
+  Wire.onRequest(i2c_request);
+
+  rtc_init();
+  rtc_set_datetime(&currTime);
 }
 
 void loop() {
@@ -105,12 +151,38 @@ void loop() {
   webServer.handleClient();
 }
 
+#pragma endregion
 
+#pragma region i2c handler
+
+void i2c_receive(int numBytesReceived) {
+  uint8_t cmd_id = 0;
+  Wire.readBytes((byte*) &cmd_id, 1);
+
+  byte i2c_buffer[numBytesReceived - 1];
+  
+  Wire.readBytes((byte*) &i2c_buffer, numBytesReceived - 1);
+  if (cmd_id == 0){
+    enable_ap_data = &i2c_buffer;
+  }else{
+    poll_ntp_data = &i2c_buffer;
+  }
+}
+
+void i2c_request() {
+  rtc_get_datetime(&currTime);
+  
+  Wire.write(1);
+}
+
+#pragma endregion
+
+#pragma region captive portal
 
 void startCaptivePortal() {
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(apName, apPassword);
+  WiFi.softAP(ACCESS_POINT_NAME, ACCESS_POINT_PASSWORD);
 
   // if DNSServer is started with "*" for domain name, it will reply with
   // provided IP to all DNS request
@@ -129,7 +201,7 @@ void stopCaptivePortal() {
 }
 
 void handleCredentials(){
-  String msg = captiveSuccessHTML;
+  String msg = CAPTIVE_SUCCESS_HTML;
 
   if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass")){
     Serial.println(webServer.arg("wifissid"));
@@ -153,41 +225,25 @@ void handleCredentials(){
         msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
       }
       else{
-        msg = captiveErrorHTML;
+        msg = CAPTIVE_ERROR_HTML;
         msg.replace("*<*Error*>*", "SSID sollte weniger als 32 Zeichen haben");
       }
     }
     else{
-      msg = captiveErrorHTML;
+      msg = CAPTIVE_ERROR_HTML;
       msg.replace("*<*Error*>*", "Passwort muss mehr als 7 Zeichen haben");
     }
   }
   else{
-    msg = captiveErrorHTML;
+    msg = CAPTIVE_ERROR_HTML;
     msg.replace("*<*Error*>*", "Unbekannter Fehler");
   }
 
-  webServer.send(200, "text/html", (styleHTML + msg));
+  webServer.send(200, "text/html", (STYLE_HTML + msg));
 }
 
 void handleCaptive(){
-  webServer.send(200, "text/html", (styleHTML + captiveFormHTML));
+  webServer.send(200, "text/html", (STYLE_HTML + CAPTIVE_FORM_HTML));
 }
 
-//three modes
-//acces point
-//ntp sync
-//off
-
-
-//turn off all wifi things
-
-//connect to hotspot
-
-//synchronise ntp
-//connects to hotspot if not
-
-
-
-//i2c set mode command
-//i2c maybe set 
+#pragma endregion
