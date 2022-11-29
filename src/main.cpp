@@ -11,6 +11,7 @@ void startCaptivePortal();
 void handleCredentials();
 void handleCaptive();
 void startNtpPoll();
+void stopCaptivePortal();
 void cancelNtpPoll();
 void begin_ntp(IPAddress s1, IPAddress s2, int timeout = 3600);
 void PrintTime();
@@ -24,8 +25,8 @@ void resetData();
 void i2c_receive(int numBytesReceived);
 void i2c_request();
 
-const int I2C_SDA_PIN = 15;
-const int I2C_SCL_PIN = 16;
+const int I2C_SDA_PIN = 8;
+const int I2C_SCL_PIN = 9;
 const int I2C_ADDRESS = 40;
 
 const int ADDRESS_SSID = 1;
@@ -49,7 +50,8 @@ IPAddress apIP(172, 217, 28, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-bool enbable_ap_flag = false;
+bool start_ap_flag = false;
+bool stop_ap_flag = false;
 bool ap_enabled = false;
 
 
@@ -60,12 +62,15 @@ bool cancel_ntp_poll_flag = false;
 bool poll_successfull = false;
 time_t poll_starttime = 0;
 uint16_t poll_timeout = 60;
+long expiry_time;
+
+bool reset_data_flag = false;
 
 PicoEspTime rtc;
 
 #pragma region i2c command datastructs
 
-enum cmd_identifier {enable_ap = 0, poll_ntp = 1};
+enum cmd_identifier {enable_ap = 0, poll_ntp = 1, reset_data = 2};
 
 struct cmd_enable_ap_data {
   bool enable; //1bytes # true enables the acces point for configuration, false disables it
@@ -171,23 +176,45 @@ void setup() {
   readCredsEEPROM();
 
   //Initialize as i2c slave
-  //Wire.setSCL(I2C_SCL_PIN);
-  //Wire.setSDA(I2C_SDA_PIN);  
-  //Wire.setClock(100000);  breaks the i2c bus for some reason
-  //Wire.begin(I2C_ADDRESS); 
-  //Wire.onReceive(i2c_receive);
-  //Wire.onRequest(i2c_request);
-  startNtpPoll();
+  Wire.setSCL(I2C_SCL_PIN);
+  Wire.setSDA(I2C_SDA_PIN);  
+  Wire.setClock(100000); 
+  Wire.begin(I2C_ADDRESS); 
+  Wire.onReceive(i2c_receive);
+  Wire.onRequest(i2c_request);
 }
 
 void loop() {
-  delay(1000);
-  Serial.println("loop");
+  delay(1);
 
-
+  if(reset_data_flag){
+    Serial.println("reset data");
+    reset_data_flag = false;
+    resetData();
+  }
+  
   if(cancel_ntp_poll_flag){
+    Serial.println("stop ntp");
     cancel_ntp_poll_flag = false;
+    start_poll_flag = false;
     cancelNtpPoll();
+  }else if(start_poll_flag){
+    Serial.println("start ntp");
+    if(!ap_enabled){
+      startNtpPoll();
+    }
+    start_poll_flag = false;
+  }
+
+  if(stop_ap_flag){
+    Serial.println("stop ap");
+    start_ap_flag = false;
+    stop_ap_flag = false;
+    stopCaptivePortal();
+  }else if (start_ap_flag){
+    Serial.println("start ap");
+    start_ap_flag = false;
+    startCaptivePortal();
   }
 
   if (ap_enabled){
@@ -202,18 +229,22 @@ void loop() {
         Serial.println("starting sntp service");
       }
       
-      Serial.println(time(nullptr));//todo use poll_starttime for detection of timeout
-      if(time(nullptr) > (poll_starttime + poll_timeout + 60)){ //if timesetting has occured
+      if(time(nullptr) > (poll_starttime + poll_timeout + 31536000)){ //if timesetting has occured, one year after 2010 or smth
         poll_successfull = true;
         Serial.println("Succesfully polled");
         rtc.read();
         PrintTime();
-        cancelNtpPoll();
+        expiry_time = time(nullptr) + poll_timeout;
       }
     }
     if(time(nullptr) > (poll_starttime + poll_timeout)){
+      Serial.println("ntp timed out");
       cancelNtpPoll();
     }
+  }
+  if(poll_successfull && time(nullptr) > expiry_time){
+    Serial.println("Invalidating ntp time since timeout has been reached");
+    poll_successfull = false;
   }
 }
 
@@ -234,15 +265,35 @@ void i2c_receive(int numBytesReceived) {
 
   if (cmd_id == enable_ap){
     Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
+    if (enable_ap_data.enable)
+    {
+      cancel_ntp_poll_flag = true;
+      start_ap_flag = true;
+    }else{
+      stop_ap_flag = true;
+    }
   }else if (cmd_id == poll_ntp){
     Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
+    poll_timeout = poll_ntp_data.ntp_timeout;
+    start_poll_flag = true;
+  }else if (cmd_id == reset_data){
+    reset_data_flag = true;
   }
 }
 
 void i2c_request() {
   //todo implement 4 bytes sent, valid, hour, minute, second
-  Wire.write(1);
-  cancelNtpPoll();
+  byte buffer[4];
+  buffer[0] = (byte)poll_successfull;
+  poll_successfull = false;
+  cancel_ntp_poll_flag = true;
+  
+  rtc.read();
+  buffer[1] = (byte)rtc.hour;
+  buffer[2] = (byte)rtc.minute;
+  buffer[3] = (byte)rtc.second;
+
+  Wire.write(buffer, 4);
 }
 
 #pragma endregion
@@ -282,9 +333,9 @@ void handleCredentials(){
 
     if((webServer.hasArg("is_protected") && webServer.arg("wifipass").length() >= 8) || !webServer.hasArg("is_protected")){
       if(webServer.arg("wifissid").length() <= 32 && webServer.arg("wifipass").length() <= 32){
-        isProtected = webServer.hasArg("wifipass");
+        isProtected = webServer.hasArg("is_protected");
         wifiNetworkName = (char*)webServer.arg("wifissid").c_str();
-        wifiNetworkPassword = (char*)webServer.arg("is_protected").c_str();
+        wifiNetworkPassword = (char*)webServer.arg("wifipass").c_str();
 
         if (webServer.hasArg("is_protected")){
           msg.replace("*<*PROT*>*", "Ja");
