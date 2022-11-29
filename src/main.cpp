@@ -18,8 +18,8 @@ void begin_ntp(IPAddress s1, IPAddress s2, int timeout = 3600);
 void PrintTime();
 void writeStringToEEPROM(int addrOffset, const String &strToWrite);
 String readStringFromEEPROM(int addrOffset);
-void saveCredsEEPROM();
-void readCredsEEPROM();
+void saveDataEEPROM();
+void readDataEEPROM();
 void resetData();
 void readRules(Timezone& tz, int address);
 void writeRules(Timezone tz, int address);
@@ -32,39 +32,17 @@ const int I2C_SDA_PIN = 8;
 const int I2C_SCL_PIN = 9;
 const int I2C_ADDRESS = 40;
 
-const int ADDRESS_SSID = 1;
-const int ADDRESS_PASS= 70;
-const int ADDRESS_PROT = 140;
-const int ADDRESS_TIMEZONE = 145;
-
 const String ACCESS_POINT_NAME = "ClockClock";
 const String ACCESS_POINT_PASSWORD = "vierundzwanzig";
-
-const String DEFAULT_WIFI_NAME = "Wifi";
-const String DEFAULT_WIFI_PASS = "12345678";
-const bool DEFAULT_WIFI_PROTECTED = false;
-
-String wifiNetworkName;
-String wifiNetworkPassword;
-bool isProtected;
 
 const byte DNS_PORT = 53;
 IPAddress apIP(172, 217, 28, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
 
-//timezone stuff
-// Central European Time (Frankfurt, Paris, Mellau)
-TimeChangeRule DEFAULT_TZ_SUMMER = {"CEST", Last, Sun, Mar, 2, 120};     // Central European Summer Time, 16 bytes
-TimeChangeRule DEFAULT_TZ_STANDARD = {"CET ", Last, Sun, Oct, 3, 60};       // Central European Standard Time, 16 bytes
-Timezone DEFAULT_TZ(DEFAULT_TZ_SUMMER, DEFAULT_TZ_STANDARD);
-
-Timezone currentTZ = DEFAULT_TZ;
-
 bool start_ap_flag = false;
 bool stop_ap_flag = false;
 bool ap_enabled = false;
-
 
 NTPClass ntp_service;
 bool start_poll_flag = false;
@@ -79,6 +57,140 @@ long expiry_time;
 bool reset_data_flag = false;
 
 PicoEspTime rtc;
+
+#pragma region settings
+
+const int ADDRESS_SETTINGS = 1; //32 bytes
+
+struct settings {
+  uint8_t ssidLength; //1 byte
+  uint8_t passLength; //1 byte
+  char ssid[33] = {}; //33 bytes
+  char pass[33] = {}; //33 bytes
+  bool isProtected; //1 byte
+  bool useGmtOffset; //1 byte
+  int8_t gmtOffset; //1 byte
+  uint8_t timezoneIdx; //1 byte
+
+  settings(String ssidStr, String passStr, bool isPr, bool uGO, int8_t gO, uint8_t tzIDX)
+  {
+    ssidLength = ssidStr.length();
+    passLength = passStr.length();
+    
+    setSSIDString(ssidStr);
+    setPassString(passStr);
+
+    isProtected = isPr;
+    useGmtOffset = uGO;
+    gmtOffset = gO;
+    timezoneIdx = tzIDX;
+  }
+
+  void setSSIDString(String ssidStr){
+    ssidLength = ssidStr.length();
+
+    for (int i = 0; i < ssidLength; i++) {
+      ssid[i] = ssidStr[i];
+    }
+  }
+
+  void setPassString(String passStr){
+    passLength = passStr.length();
+
+    for (int i = 0; i < passLength; i++) {
+      pass[i] = passStr[i];
+    }
+  }
+
+  String getSSIDString(){
+    char ssid_str[ssidLength + 1];
+
+    for (int i = 0; i < ssidLength; i++) {
+      ssid_str[i] = ssid[i];
+    }
+
+    ssid_str[ssidLength] = '\0';
+
+    return String(ssid_str);
+  }
+
+  String getPassString(){
+    char pass_str[passLength + 1];
+
+    for (int i = 0; i < passLength; i++) {
+      pass_str[i] = pass[i];
+    }
+
+    pass_str[passLength] = '\0';
+
+    return String(pass_str);
+  }
+
+  String getPrintableString(){
+    String ssid = getSSIDString();
+    String pass = getPassString();
+    return "SSID:" + ssid + " Pass:" + pass + " isProtected:" + isProtected + " useGmtOffset:" + useGmtOffset + " gmtOffset:" + gmtOffset + " timezoneIdx:" + timezoneIdx;
+  }
+};
+
+settings DEFAULT_SETTINGS = settings("Wifi", "12345678", false, false, 0, 0);
+settings current_settings = DEFAULT_SETTINGS;
+
+#pragma endregion
+
+#pragma region timezone data
+
+// Central European Time (Frankfurt, Paris)
+TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120};     // Central European Summer Time
+TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};       // Central European Standard Time
+Timezone CE(CEST, CET);
+
+// United Kingdom (London, Belfast)
+TimeChangeRule BST = {"BST", Last, Sun, Mar, 1, 60};        // British Summer Time
+TimeChangeRule GMT = {"GMT", Last, Sun, Oct, 2, 0};         // Standard Time
+Timezone UK(BST, GMT);
+
+// US Eastern Time Zone (New York, Detroit)
+TimeChangeRule usEDT = {"EDT", Second, Sun, Mar, 2, -240};  // Eastern Daylight Time = UTC - 4 hours
+TimeChangeRule usEST = {"EST", First, Sun, Nov, 2, -300};   // Eastern Standard Time = UTC - 5 hours
+Timezone usET(usEDT, usEST);
+
+// US Central Time Zone (Chicago, Houston)
+TimeChangeRule usCDT = {"CDT", Second, Sun, Mar, 2, -300};
+TimeChangeRule usCST = {"CST", First, Sun, Nov, 2, -360};
+Timezone usCT(usCDT, usCST);
+
+// US Mountain Time Zone (Denver, Salt Lake City)
+TimeChangeRule usMDT = {"MDT", Second, Sun, Mar, 2, -360};
+TimeChangeRule usMST = {"MST", First, Sun, Nov, 2, -420};
+Timezone usMT(usMDT, usMST);
+
+// US Pacific Time Zone (Las Vegas, Los Angeles)
+TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420};
+TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};
+Timezone usPT(usPDT, usPST);
+
+// Australia Eastern Time Zone (Sydney, Melbourne)
+TimeChangeRule aEDT = {"AEDT", First, Sun, Oct, 2, 660};    // UTC + 11 hours
+TimeChangeRule aEST = {"AEST", First, Sun, Apr, 3, 600};    // UTC + 10 hours
+Timezone ausET(aEDT, aEST);
+
+
+enum timezone_identifier {cet = 0, uk = 1, jaudling = 2, uset = 3, usct = 4, usmt = 5, uspt = 6, mellau = 8, auset = 7};
+
+Timezone timezones[] = {CE, UK, CE, usET, usCT, usMT, usPT, CE, ausET};
+
+char colour[9][18] = {"Central European", "United Kingdom", "Jaudling", "US Eastern", "US Central", "US Mountain", "US Pacific", "Mellau" , "Australia Eastern"};
+
+int8_t DEFAULT_GMT_OFFSET = 0;
+uint8_t DEFAULT_TZ_IDX = 0;
+bool DEFAULT_USE_TZ = true;  //use timezone or gmt offset
+
+int gmt_offset = DEFAULT_GMT_OFFSET;
+int timezone_idx = DEFAULT_TZ_IDX;
+int use_timezone = DEFAULT_USE_TZ;
+
+#pragma endregion
 
 #pragma region i2c command datastructs
 
@@ -158,7 +270,7 @@ const String CAPTIVE_SUCCESS_HTML = R"rawliteral(<body>
     <p>Geschützt: *<*PROT*>*</p>
     <p></p>
     <form action="/" method="POST">
-      <input type="submit" value="Anpassen">
+      <input type="submit" value="Startseite">
     </form><br>
   </div>
 </body></html>)rawliteral";
@@ -177,7 +289,7 @@ const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
 
 #pragma endregion
 
-#pragma region setup and loop
+#pragma region setup and loop  
 
 void setup() {
   //todo load ssid password and if protected from flash
@@ -187,7 +299,7 @@ void setup() {
   delay(4000);
 
   EEPROM.begin(256);
-  readCredsEEPROM();
+  readDataEEPROM();
   
   rtc.adjust(1, 0, 0, 2010, 1,1); //some random date
 
@@ -300,7 +412,16 @@ void i2c_receive(int numBytesReceived) {
 void i2c_request() {
   byte buffer[4];
   rtc.read();
-  time_t t = currentTZ.toLocal(rtc.getEpoch());
+
+  time_t t = 0;
+
+  if (current_settings.useGmtOffset){
+    TimeChangeRule utcRule = {"UTC", Last, Sun, Mar, 1, current_settings.gmtOffset * 60};     // UTC
+    Timezone UTC(utcRule);
+    t = UTC.toLocal(rtc.getEpoch());
+  }else{
+    t = timezones[current_settings.timezoneIdx].toLocal(rtc.getEpoch());
+  }
 
   buffer[0] = (byte)poll_successfull;
   buffer[1] = (byte)hour(t);
@@ -355,14 +476,14 @@ void handleCredentials(){
   if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass")){
     Serial.println(webServer.arg("wifissid"));
     Serial.println(webServer.arg("wifipass"));
-    Serial.println(webServer.arg("is_protected"));
+    Serial.println(webServer.hasArg("is_protected"));
 
     if((webServer.hasArg("is_protected") && webServer.arg("wifipass").length() >= 8) || !webServer.hasArg("is_protected")){
       if(webServer.arg("wifissid").length() <= 32 && webServer.arg("wifipass").length() <= 32){
-        isProtected = webServer.hasArg("is_protected");
-        wifiNetworkName = (char*)webServer.arg("wifissid").c_str();
-        wifiNetworkPassword = (char*)webServer.arg("wifipass").c_str();
-
+        current_settings.isProtected = webServer.hasArg("is_protected");
+        current_settings.setSSIDString(webServer.arg("wifissid"));
+        current_settings.setPassString(webServer.arg("wifipass"));
+        
         if (webServer.hasArg("is_protected")){
           msg.replace("*<*PROT*>*", "Ja");
         }else{
@@ -373,7 +494,7 @@ void handleCredentials(){
         msg.replace("*<*SSID*>*", webServer.arg("wifissid"));
         msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
 
-        saveCredsEEPROM();
+        saveDataEEPROM();
       }
       else{
         msg = CAPTIVE_ERROR_HTML;
@@ -411,15 +532,17 @@ void startNtpPoll() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("ClockClockNTPService");
 
-  int name_len = wifiNetworkName.length() + 1;
-  char name[name_len];
-  wifiNetworkName.toCharArray(name, name_len);
+  char name[current_settings.ssidLength];
+  for (int i = 0; i < current_settings.ssidLength; i++) {
+    name[i] = current_settings.ssid[i];
+  }
 
-  int pass_len = wifiNetworkPassword.length() + 1;
-  char pass[pass_len];
-  wifiNetworkPassword.toCharArray(pass, pass_len);
+  char pass[current_settings.passLength];
+  for (int i = 0; i < current_settings.passLength; i++) {
+    pass[i] = current_settings.pass[i];
+  }
 
-  if(isProtected){
+  if(current_settings.isProtected){
     WiFi.begin(name, pass);
   }else{
     WiFi.begin(name);
@@ -471,33 +594,24 @@ void writeRules(Timezone tz, int address)
   EEPROM.put(address, tz);
 }
 
-void saveCredsEEPROM()
+void saveDataEEPROM()
 {
-  Serial.println(("wrote to eeprom  " + wifiNetworkName + "  " + wifiNetworkPassword + "  " + String(isProtected)));
-  currentTZ.writeRules(ADDRESS_TIMEZONE);
-  writeStringToEEPROM(ADDRESS_SSID, wifiNetworkName);
-  writeStringToEEPROM(ADDRESS_PASS, wifiNetworkPassword);
-  EEPROM.write(ADDRESS_PROT, isProtected);
+  Serial.println(current_settings.getPrintableString());
+  EEPROM.put(ADDRESS_SETTINGS, current_settings);
 
   EEPROM.commit();
 }
 
-void readCredsEEPROM()
+void readDataEEPROM()
 {
-  currentTZ.readRules(ADDRESS_TIMEZONE);
-  wifiNetworkName = readStringFromEEPROM(ADDRESS_SSID);
-  wifiNetworkPassword = readStringFromEEPROM(ADDRESS_PASS);
-  isProtected = (bool)EEPROM.read(ADDRESS_PROT);
-  Serial.println(("read from eeprom  " + wifiNetworkName + "  " + wifiNetworkPassword + "  " + String(isProtected)));
+  EEPROM.get(ADDRESS_SETTINGS, current_settings);
+  Serial.println(current_settings.getPrintableString());
 }
 
 void resetData()
 {
-  currentTZ = DEFAULT_TZ;
-  wifiNetworkName = DEFAULT_WIFI_NAME;
-  wifiNetworkPassword = DEFAULT_WIFI_PASS;
-  isProtected = DEFAULT_WIFI_PROTECTED;
-  saveCredsEEPROM();
+  current_settings = DEFAULT_SETTINGS;
+  saveDataEEPROM();
 }
 
 #pragma endregion
