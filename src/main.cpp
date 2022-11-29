@@ -73,6 +73,7 @@ bool cancel_ntp_poll_flag = false;
 bool poll_successfull = false;
 time_t poll_starttime = 0;
 uint16_t poll_timeout = 60;
+uint16_t ntp_time_validity = 60;
 long expiry_time;
 
 bool reset_data_flag = false;
@@ -89,6 +90,7 @@ struct cmd_enable_ap_data {
 
 struct cmd_poll_ntp_data {
   uint16_t ntp_timeout; //2bytes, timeout in s
+  uint16_t ntp_time_validity; //2bytes, how long the retrieved time will be valid
 };
 
 cmd_enable_ap_data enable_ap_data;
@@ -243,10 +245,10 @@ void loop() {
         Serial.println("Succesfully polled");
         rtc.read();
         PrintTime();
-        expiry_time = time(nullptr) + poll_timeout;
+        expiry_time = time(nullptr) + ntp_time_validity;
       }
     }
-    if(time(nullptr) > (poll_starttime + poll_timeout)){
+    if(time(nullptr) > (poll_starttime + poll_timeout) || poll_successfull){ //also called after time is set succesfully
       Serial.println("ntp ended");
       cancelNtpPoll();
     }
@@ -255,6 +257,9 @@ void loop() {
   if(poll_successfull && time(nullptr) > expiry_time){
     Serial.println("Invalidating ntp time since timeout has been reached");
     poll_successfull = false;
+    if(polling_ntp){
+      cancelNtpPoll();
+    }
   }
 }
 
@@ -285,6 +290,7 @@ void i2c_receive(int numBytesReceived) {
   }else if (cmd_id == poll_ntp){
     Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
     poll_timeout = poll_ntp_data.ntp_timeout;
+    ntp_time_validity = poll_ntp_data.ntp_time_validity;
     start_poll_flag = true;
   }else if (cmd_id == reset_data){
     reset_data_flag = true;
@@ -295,14 +301,11 @@ void i2c_request() {
   byte buffer[4];
   rtc.read();
   time_t t = currentTZ.toLocal(rtc.getEpoch());
-  
+
   buffer[0] = (byte)poll_successfull;
   buffer[1] = (byte)hour(t);
   buffer[2] = (byte)minute(t);
   buffer[3] = (byte)second(t);
-
-  poll_successfull = false;
-  cancel_ntp_poll_flag = true;
 
   Wire.write(buffer, 4);
 }
