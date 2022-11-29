@@ -172,8 +172,12 @@ void setup() {
   Serial.begin(9600);
   Serial.println("test");
 
+  delay(4000);
+
   EEPROM.begin(256);
   readCredsEEPROM();
+
+  rtc.adjust(0, 0, 0, 2010, 1,1);
 
   //Initialize as i2c slave
   Wire.setSCL(I2C_SCL_PIN);
@@ -188,18 +192,15 @@ void loop() {
   delay(1);
 
   if(reset_data_flag){
-    Serial.println("reset data");
     reset_data_flag = false;
     resetData();
   }
   
   if(cancel_ntp_poll_flag){
-    Serial.println("stop ntp");
     cancel_ntp_poll_flag = false;
     start_poll_flag = false;
     cancelNtpPoll();
   }else if(start_poll_flag){
-    Serial.println("start ntp");
     if(!ap_enabled){
       startNtpPoll();
     }
@@ -207,12 +208,10 @@ void loop() {
   }
 
   if(stop_ap_flag){
-    Serial.println("stop ap");
     start_ap_flag = false;
     stop_ap_flag = false;
     stopCaptivePortal();
   }else if (start_ap_flag){
-    Serial.println("start ap");
     start_ap_flag = false;
     startCaptivePortal();
   }
@@ -238,7 +237,7 @@ void loop() {
       }
     }
     if(time(nullptr) > (poll_starttime + poll_timeout)){
-      Serial.println("ntp timed out");
+      Serial.println("ntp ended");
       cancelNtpPoll();
     }
   }
@@ -282,7 +281,6 @@ void i2c_receive(int numBytesReceived) {
 }
 
 void i2c_request() {
-  //todo implement 4 bytes sent, valid, hour, minute, second
   byte buffer[4];
   buffer[0] = (byte)poll_successfull;
   poll_successfull = false;
@@ -301,26 +299,38 @@ void i2c_request() {
 #pragma region captive portal
 
 void startCaptivePortal() {
-  ap_enabled = true;
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ACCESS_POINT_NAME, ACCESS_POINT_PASSWORD);
+  if(!ap_enabled){
+    Serial.println("start ap");
+    ap_enabled = true;
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+    WiFi.softAP(ACCESS_POINT_NAME, ACCESS_POINT_PASSWORD);
 
-  // if DNSServer is started with "*" for domain name, it will reply with
-  // provided IP to all DNS request
-  dnsServer.start(DNS_PORT, "*", apIP);
+    // if DNSServer is started with "*" for domain name, it will reply with
+    // provided IP to all DNS request
+    dnsServer.start(DNS_PORT, "*", apIP);
 
-  // replay to all requests with same HTML
-  webServer.on("/credentials", HTTP_POST, handleCredentials);
-  webServer.onNotFound(handleCaptive);
-  webServer.begin();
+    // replay to all requests with same HTML
+    webServer.on("/credentials", HTTP_POST, handleCredentials);
+    webServer.onNotFound(handleCaptive);
+    webServer.begin();
+  }
+  else{
+    Serial.println("ap already running");
+  }
 }
 
 void stopCaptivePortal() {
-  ap_enabled = false;
-  WiFi.mode(WIFI_OFF);
-  dnsServer.stop();
-  webServer.stop();
+  if(ap_enabled){
+    Serial.println("stop ap");
+    ap_enabled = false;
+    WiFi.mode(WIFI_OFF);
+    dnsServer.stop();
+    webServer.stop();
+  }
+  else{
+    Serial.println("ap already stopped");
+  }
 }
 
 void handleCredentials(){
@@ -376,6 +386,7 @@ void handleCaptive(){
 #pragma region ntp polling
 
 void startNtpPoll() {
+  Serial.println("start ntp");
   ntp_service = NTPClass();
   poll_successfull = false;
   polling_ntp = true;
@@ -400,9 +411,12 @@ void startNtpPoll() {
 }
 
 void cancelNtpPoll() {
+  Serial.println("stop ntp");
   polling_ntp = false;
   sntp_stop(); //stops the sntp service used by NTPClass
-  WiFi.mode(WIFI_OFF);
+  if(!ap_enabled){
+    WiFi.mode(WIFI_OFF);
+  }
 }
 
 #pragma endregion
