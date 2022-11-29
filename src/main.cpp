@@ -6,6 +6,7 @@
 #include <PicoEspTime.h>
 #include <lwip/apps/sntp.h>
 #include <EEPROM.h>
+#include <Timezone.h>
 
 void startCaptivePortal();
 void handleCredentials();
@@ -20,6 +21,8 @@ String readStringFromEEPROM(int addrOffset);
 void saveCredsEEPROM();
 void readCredsEEPROM();
 void resetData();
+void readRules(Timezone& tz, int address);
+void writeRules(Timezone tz, int address);
 
 //i2c handlers
 void i2c_receive(int numBytesReceived);
@@ -32,10 +35,10 @@ const int I2C_ADDRESS = 40;
 const int ADDRESS_SSID = 1;
 const int ADDRESS_PASS= 70;
 const int ADDRESS_PROT = 140;
+const int ADDRESS_TIMEZONE = 145;
 
 const String ACCESS_POINT_NAME = "ClockClock";
 const String ACCESS_POINT_PASSWORD = "vierundzwanzig";
-
 
 const String DEFAULT_WIFI_NAME = "Wifi";
 const String DEFAULT_WIFI_PASS = "12345678";
@@ -49,6 +52,14 @@ const byte DNS_PORT = 53;
 IPAddress apIP(172, 217, 28, 1);
 DNSServer dnsServer;
 WebServer webServer(80);
+
+//timezone stuff
+// Central European Time (Frankfurt, Paris, Mellau)
+TimeChangeRule DEFAULT_TZ_SUMMER = {"CEST", Last, Sun, Mar, 2, 120};     // Central European Summer Time, 16 bytes
+TimeChangeRule DEFAULT_TZ_STANDARD = {"CET ", Last, Sun, Oct, 3, 60};       // Central European Standard Time, 16 bytes
+Timezone DEFAULT_TZ(DEFAULT_TZ_SUMMER, DEFAULT_TZ_STANDARD);
+
+Timezone currentTZ = DEFAULT_TZ;
 
 bool start_ap_flag = false;
 bool stop_ap_flag = false;
@@ -168,7 +179,6 @@ const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
 
 void setup() {
   //todo load ssid password and if protected from flash
-
   Serial.begin(9600);
   Serial.println("test");
 
@@ -176,8 +186,8 @@ void setup() {
 
   EEPROM.begin(256);
   readCredsEEPROM();
-
-  rtc.adjust(0, 0, 0, 2010, 1,1);
+  
+  rtc.adjust(1, 0, 0, 2010, 1,1); //some random date
 
   //Initialize as i2c slave
   Wire.setSCL(I2C_SCL_PIN);
@@ -241,6 +251,7 @@ void loop() {
       cancelNtpPoll();
     }
   }
+
   if(poll_successfull && time(nullptr) > expiry_time){
     Serial.println("Invalidating ntp time since timeout has been reached");
     poll_successfull = false;
@@ -282,14 +293,16 @@ void i2c_receive(int numBytesReceived) {
 
 void i2c_request() {
   byte buffer[4];
+  rtc.read();
+  time_t t = currentTZ.toLocal(rtc.getEpoch());
+  
   buffer[0] = (byte)poll_successfull;
+  buffer[1] = (byte)hour(t);
+  buffer[2] = (byte)minute(t);
+  buffer[3] = (byte)second(t);
+
   poll_successfull = false;
   cancel_ntp_poll_flag = true;
-  
-  rtc.read();
-  buffer[1] = (byte)rtc.hour;
-  buffer[2] = (byte)rtc.minute;
-  buffer[3] = (byte)rtc.second;
 
   Wire.write(buffer, 4);
 }
@@ -390,7 +403,7 @@ void startNtpPoll() {
   ntp_service = NTPClass();
   poll_successfull = false;
   polling_ntp = true;
-  rtc.adjust(0, 0, 0, 2010, 1,1);
+  rtc.adjust(1, 0, 0, 2010, 1,1);
   poll_starttime = time(nullptr);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("ClockClockNTPService");
@@ -445,9 +458,20 @@ String readStringFromEEPROM(int addrOffset)
   return String(data);
 }
 
+void readRules(Timezone& tz, int address)
+{
+  EEPROM.get(address, tz);
+}
+
+void writeRules(Timezone tz, int address)
+{
+  EEPROM.put(address, tz);
+}
+
 void saveCredsEEPROM()
 {
   Serial.println(("wrote to eeprom  " + wifiNetworkName + "  " + wifiNetworkPassword + "  " + String(isProtected)));
+  currentTZ.writeRules(ADDRESS_TIMEZONE);
   writeStringToEEPROM(ADDRESS_SSID, wifiNetworkName);
   writeStringToEEPROM(ADDRESS_PASS, wifiNetworkPassword);
   EEPROM.write(ADDRESS_PROT, isProtected);
@@ -457,6 +481,7 @@ void saveCredsEEPROM()
 
 void readCredsEEPROM()
 {
+  currentTZ.readRules(ADDRESS_TIMEZONE);
   wifiNetworkName = readStringFromEEPROM(ADDRESS_SSID);
   wifiNetworkPassword = readStringFromEEPROM(ADDRESS_PASS);
   isProtected = (bool)EEPROM.read(ADDRESS_PROT);
@@ -465,6 +490,7 @@ void readCredsEEPROM()
 
 void resetData()
 {
+  currentTZ = DEFAULT_TZ;
   wifiNetworkName = DEFAULT_WIFI_NAME;
   wifiNetworkPassword = DEFAULT_WIFI_PASS;
   isProtected = DEFAULT_WIFI_PROTECTED;
