@@ -354,7 +354,7 @@ void loop() {
       
       if(time(nullptr) > (poll_starttime + poll_timeout + 31536000)){ //if timesetting has occured, one year after 2010 or smth
         poll_successfull = true;
-        Serial.println("Succesfully polled");
+        Serial.println("Succesfully polled, time will be valid for (s)" + ntp_time_validity);
         rtc.read();
         PrintTime();
         expiry_time = time(nullptr) + ntp_time_validity;
@@ -366,7 +366,7 @@ void loop() {
     }
   }
 
-  if(poll_successfull && time(nullptr) > expiry_time){
+  if(poll_successfull && (time(nullptr) > expiry_time)){
     Serial.println("Invalidating ntp time since timeout has been reached");
     poll_successfull = false;
     if(polling_ntp){
@@ -532,15 +532,17 @@ void startNtpPoll() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("ClockClockNTPService");
 
-  char name[current_settings.ssidLength];
+  char name[current_settings.ssidLength + 1];
   for (int i = 0; i < current_settings.ssidLength; i++) {
     name[i] = current_settings.ssid[i];
   }
+  name[current_settings.ssidLength] = '\0';
 
-  char pass[current_settings.passLength];
+  char pass[current_settings.passLength + 1];
   for (int i = 0; i < current_settings.passLength; i++) {
     pass[i] = current_settings.pass[i];
   }
+  pass[current_settings.passLength] = '\0';
 
   if(current_settings.isProtected){
     WiFi.begin(name, pass);
