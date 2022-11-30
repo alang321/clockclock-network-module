@@ -58,6 +58,10 @@ bool reset_data_flag = false;
 
 PicoEspTime rtc;
 
+enum connection_feedback {success = 0, fail = 1, not_yet_attempted = 2};
+uint8_t ntp_feedback = not_yet_attempted;
+uint8_t wifi_feedback = not_yet_attempted;
+
 #pragma region settings
 
 const int ADDRESS_SETTINGS = 1; //32 bytes
@@ -176,19 +180,13 @@ TimeChangeRule aEST = {"AEST", First, Sun, Apr, 3, 600};    // UTC + 10 hours
 Timezone ausET(aEDT, aEST);
 
 
-enum timezone_identifier {cet = 0, uk = 1, jaudling = 2, uset = 3, usct = 4, usmt = 5, uspt = 6, mellau = 8, auset = 7};
+enum timezone_identifier {cet = 0, uk = 1, jaudling = 2, uset = 3, usct = 4, usmt = 5, uspt = 6, mellau = 7, auset = 8};
 
 Timezone timezones[] = {CE, UK, CE, usET, usCT, usMT, usPT, CE, ausET};
 
-char colour[9][18] = {"Central European", "United Kingdom", "Jaudling", "US Eastern", "US Central", "US Mountain", "US Pacific", "Mellau" , "Australia Eastern"};
+char timezoneNames[9][18] = {"Central European", "United Kingdom", "Jaudling", "US Eastern", "US Central", "US Mountain", "US Pacific", "Mellau" , "Australia Eastern"};
 
-int8_t DEFAULT_GMT_OFFSET = 0;
-uint8_t DEFAULT_TZ_IDX = 0;
-bool DEFAULT_USE_TZ = true;  //use timezone or gmt offset
-
-int gmt_offset = DEFAULT_GMT_OFFSET;
-int timezone_idx = DEFAULT_TZ_IDX;
-int use_timezone = DEFAULT_USE_TZ;
+const int NUM_TIMEZONES = 9;
 
 #pragma endregion
 
@@ -222,10 +220,13 @@ const String STYLE_HTML = R"rawliteral(
   p{text-align:center;}
   div{margin: 5%; background-color:#242424; padding:10px; border-radius:8px;}
   br{display: block; margin: 10px 0; line-height:22px; content: " ";}
-  label{margin-left: 4%; margin-top: 2%; font-size: 22px;display: block;}
-  input[type="text"]{border-radius: 8px; border: 2px solid #0056a8; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
-  input[type="submit"]{font-size: 25px; background-color:#0056a8; color:white; padding 10px; border-radius:8px; height:50px; width:93%;display:block; margin-top:5%; margin-right:auto; margin-left:auto;}
+  .biglabel{font-size:20px; border-radius: 8px; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
+  .smalllabel{border-radius: 8px; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
+  .textbox{border-radius: 8px; border: 2px solid #0056a8; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
+  .numbox{border-radius: 8px; border: 2px solid #0056a8; width:15%; padding:10px; }
+  input[type="submit"]{font-size: 23px; background-color:#0056a8; color:white; padding 10px; border-radius:8px; height:50px; width:93%;display:block; margin-top:5%; margin-right:auto; margin-left:auto;}
   .disable_section {pointer-events: none;opacity: 0.4;}
+  .hor {margin:2%;}
   input[type="checkbox"]{width: 20px;height: 20px; vertical-align: middle;position: relative;bottom: 1px;}
   </style>
   </head>)rawliteral";
@@ -233,30 +234,54 @@ const String STYLE_HTML = R"rawliteral(
 const String CAPTIVE_FORM_HTML = R"rawliteral(<body>
     <body>
   <div>
-    <h1>ClockClock</h1>
-    <p>Geben sie die folgenden Daten ein um Ihre Uhr mit einem 2.4GHz WLAN-Netzwerk für Internet-Zeitsynchronisierung zu verbinden:</p>
+    <h1>UhrUhr24</h1>
     <br>
     <br>
     <form action="/credentials" method="POST">
-      <label>Wi-Fi Daten:</label>
+      <label class="biglabel" >Wi-Fi Daten (Zeitsynchronisierung):</label>
       <br>
-      <input type="text" name="wifissid" id="wifissid" placeholder="Wi-Fi SSID">
+      <input class="textbox" type="text" name="wifissid" id="wifissid" placeholder="WLAN SSID" value="*<*SSID*>*">
       <br>
-      <input type="text" name="wifipass" id="wifipass" placeholder="Wi-Fi Passwort">
-      <label style="font-size:16px;"><input type="checkbox" name="is_protected" id="is_protected" onclick="enablepassword()" checked/> Geschütztes Netzwerk?</label>
+      <input class="textbox" type="text" name="wifipass" id="wifipass" placeholder="Passwort unverändert">
+      <label class="smalllabel"><input type="checkbox" name="is_protected" id="is_protected" onclick="enableFields()" *<*IS_PROT*>*/> Geschütztes Netzwerk</label>
       <br>
-      <input type="submit" value="Submit">
+      <hr class="hor">
+      <label class="biglabel">Zeitzone:</label>
+      
+      <select class="textbox" id="timezone" name="timezone">
+          *<*TZ_LIST*>*
+        </select>
+      <label class="smalllabel"><input type="checkbox" name="gmt_offset_enabled" id="gmt_offset_enabled" onclick="enableFields()" *<*USE_GMT_OFFS*>*/> Stattdessen GMT-Abweichung verwenden</label>
+      <label class="smalllabel" id="gmtOffsetLabel"> GMT-Abweichung: GMT <input class="numbox" type="number" id="gmtOffset" name="gmtOffset" min="-12" max="12" value="*<*GMT_OFFS*>*"></label>
+      
+
+      <input type="submit" value="Änderungen Speichern">
     </form><br>
+  </div>
+  <div>
+      <p style="color:grey">Letzte Wifi-Verbindung erfolgreich: <span style="color:*<*WIFI_COL*>*">*<*WIFI*>*</span></p>
+      <p style="color:grey">Letzte Internet-Zeitabfrage erfolgreich: <span style="color:*<*NTP_COL*>*">*<*NTP*>*</span></p>
   </div>
 </body>
 <script>
-function enablepassword() {
+function enableFields() {
   if (document.getElementById("is_protected").checked) {
     document.getElementById("wifipass").classList.remove('disable_section')
   } else {
     document.getElementById("wifipass").classList.add('disable_section')
   }
+  if (document.getElementById("gmt_offset_enabled").checked) {
+    document.getElementById("gmtOffsetLabel").classList.remove('disable_section')
+    document.getElementById("gmtOffset").classList.remove('disable_section')
+    document.getElementById("timezone").classList.add('disable_section')
+  } else {
+    document.getElementById("gmtOffsetLabel").classList.add('disable_section')
+    document.getElementById("gmtOffset").classList.add('disable_section')
+    document.getElementById("timezone").classList.remove('disable_section')
+  }
 }
+
+window.onload = enableFields;
 </script>
 </html>)rawliteral";
 
@@ -270,7 +295,7 @@ const String CAPTIVE_SUCCESS_HTML = R"rawliteral(<body>
     <p>Geschützt: *<*PROT*>*</p>
     <p></p>
     <form action="/" method="POST">
-      <input type="submit" value="Startseite">
+      <input type="submit" value="Anpassen">
     </form><br>
   </div>
 </body></html>)rawliteral";
@@ -347,12 +372,14 @@ void loop() {
   else if (polling_ntp){
     //todo, handle timeouts, overflow save millis webpage
     if(WiFi.status() == WL_CONNECTED){
+      wifi_feedback = success;
       if(!ntp_service.running()){
         ntp_service.begin("pool.ntp.org", "time.nist.gov");
         Serial.println("starting sntp service");
       }
       
       if(time(nullptr) > (poll_starttime + poll_timeout + 31536000)){ //if timesetting has occured, one year after 2010 or smth
+        ntp_feedback = success;
         poll_successfull = true;
         Serial.println("Succesfully polled, time will be valid for (s)" + ntp_time_validity);
         rtc.read();
@@ -361,6 +388,13 @@ void loop() {
       }
     }
     if(time(nullptr) > (poll_starttime + poll_timeout) || poll_successfull){ //also called after time is set succesfully
+      if(!poll_successfull){
+        ntp_feedback = fail;
+      }
+      if(wifi_feedback != success){
+        wifi_feedback = fail;
+      }
+
       Serial.println("ntp ended");
       cancelNtpPoll();
     }
@@ -473,16 +507,26 @@ void stopCaptivePortal() {
 void handleCredentials(){
   String msg = CAPTIVE_SUCCESS_HTML;
 
-  if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass")){
+  if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass") && webServer.hasArg("timezone") && webServer.hasArg("gmtOffset")){
     Serial.println(webServer.arg("wifissid"));
     Serial.println(webServer.arg("wifipass"));
     Serial.println(webServer.hasArg("is_protected"));
 
-    if((webServer.hasArg("is_protected") && webServer.arg("wifipass").length() >= 8) || !webServer.hasArg("is_protected")){
-      if(webServer.arg("wifissid").length() <= 32 && webServer.arg("wifipass").length() <= 32){
+    String wifipass;
+    if(webServer.arg("wifipass") == ""){
+      wifipass = current_settings.getPassString();
+    }else{
+      wifipass = webServer.arg("wifipass");
+    }
+
+    if((webServer.hasArg("is_protected") && wifipass.length() >= 8) || !webServer.hasArg("is_protected")){
+      if(webServer.arg("wifissid").length() <= 32 && wifipass.length() <= 32){
         current_settings.isProtected = webServer.hasArg("is_protected");
         current_settings.setSSIDString(webServer.arg("wifissid"));
-        current_settings.setPassString(webServer.arg("wifipass"));
+        current_settings.setPassString(wifipass);
+        current_settings.timezoneIdx = webServer.arg("timezone").toInt();
+        current_settings.useGmtOffset = webServer.hasArg("gmt_offset_enabled");
+        current_settings.gmtOffset = webServer.arg("gmtOffset").toInt();
         
         if (webServer.hasArg("is_protected")){
           msg.replace("*<*PROT*>*", "Ja");
@@ -492,13 +536,18 @@ void handleCredentials(){
           msg.replace(a, "");
         }
         msg.replace("*<*SSID*>*", webServer.arg("wifissid"));
-        msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
 
+        if(webServer.arg("wifipass") == ""){
+          msg.replace("*<*PASS*>*", "unverändert");
+        }else{
+          msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
+        }
+        
         saveDataEEPROM();
       }
       else{
         msg = CAPTIVE_ERROR_HTML;
-        msg.replace("*<*Error*>*", "SSID und Passwort sollten je weniger als 33 Zeichen haben");
+        msg.replace("*<*Error*>*", "SSID und Passwort müssen je weniger als 33 Zeichen haben");
       }
     }
     else{
@@ -515,7 +564,55 @@ void handleCredentials(){
 }
 
 void handleCaptive(){
-  webServer.send(200, "text/html", (STYLE_HTML + CAPTIVE_FORM_HTML));
+  String form = CAPTIVE_FORM_HTML;
+  form.replace("*<*SSID*>*", current_settings.getSSIDString());
+  if(current_settings.isProtected){
+    form.replace("*<*IS_PROT*>*", "checked");
+  }else{
+    form.replace("*<*IS_PROT*>*", "");
+  }
+
+  String tmzListItems = "";
+  for (int i = 0; i < NUM_TIMEZONES; i++){
+    if(current_settings.timezoneIdx == i){
+      tmzListItems += "<option value=\"" + String(i) + "\" selected>" + timezoneNames[i] + "</option>";
+    }else{
+      tmzListItems += "<option value=\"" + String(i) + "\">" + timezoneNames[i] + "</option>";
+    }
+  }
+  form.replace("*<*TZ_LIST*>*", tmzListItems);
+  
+  if(current_settings.useGmtOffset){
+    form.replace("*<*USE_GMT_OFFS*>*", "checked");
+  }else{
+    form.replace("*<*USE_GMT_OFFS*>*", "");
+  }
+
+  form.replace("*<*GMT_OFFS*>*", String(current_settings.gmtOffset));
+  
+  if(wifi_feedback == success){
+    form.replace("*<*WIFI*>*", "Ja");
+    form.replace("*<*WIFI_COL*>*", "green");
+  }else if(wifi_feedback == fail){
+    form.replace("*<*WIFI*>*", "Nein");
+    form.replace("*<*WIFI_COL*>*", "red");
+  }else{
+    form.replace("*<*WIFI*>*", "Ungetestet");
+    form.replace("*<*WIFI_COL*>*", "grey");
+  }
+
+  if(ntp_feedback == success){
+    form.replace("*<*NTP*>*", "Ja");
+    form.replace("*<*NTP_COL*>*", "green");
+  }else if(ntp_feedback == fail){
+    form.replace("*<*NTP*>*", "Nein");
+    form.replace("*<*NTP_COL*>*", "red");
+  }else{
+    form.replace("*<*NTP*>*", "Ungetestet");
+    form.replace("*<*NTP_COL*>*", "grey");
+  }
+  
+  webServer.send(200, "text/html", (STYLE_HTML + form));
 }
 
 #pragma endregion
