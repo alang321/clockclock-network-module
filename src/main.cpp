@@ -352,9 +352,10 @@ void loop() {
   
   if(cancel_ntp_poll_flag){
     cancel_ntp_poll_flag = false;
-    start_poll_flag = false;
     cancelNtpPoll();
-  }else if(start_poll_flag){
+  }
+
+  if(start_poll_flag){
     if(!ap_enabled){
       startNtpPoll();
     }
@@ -362,10 +363,14 @@ void loop() {
   }
 
   if(stop_ap_flag){
-    start_ap_flag = false;
     stop_ap_flag = false;
     stopCaptivePortal();
-  }else if (start_ap_flag){
+  }
+  
+  if (start_ap_flag){
+    if(polling_ntp){
+      cancelNtpPoll();
+    }
     start_ap_flag = false;
     startCaptivePortal();
   }
@@ -377,7 +382,8 @@ void loop() {
   if (ap_enabled){
     dnsServer.processNextRequest();
   }
-  else if (polling_ntp){
+
+  if (polling_ntp){
     //todo, handle timeouts, overflow save millis webpage
     if(WiFi.status() == WL_CONNECTED){
       wifi_feedback_2 = success;
@@ -389,7 +395,7 @@ void loop() {
       if(time(nullptr) > (poll_starttime + poll_timeout + 31536000)){ //if timesetting has occured, one year after 2010 or smth
         ntp_feedback = success;
         poll_successfull = true;
-        Serial.println("Succesfully polled, time will be valid for (s)" + ntp_time_validity);
+        Serial.println(("Succesfully polled, time will be valid for (s)" + ntp_time_validity));
         rtc.read();
         PrintTime();
         expiry_time = time(nullptr) + ntp_time_validity;
@@ -434,7 +440,6 @@ void i2c_receive(int numBytesReceived) {
     Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
     if (enable_ap_data.enable)
     {
-      cancel_ntp_poll_flag = true;
       start_ap_flag = true;
     }else{
       stop_ap_flag = true;
@@ -443,6 +448,7 @@ void i2c_receive(int numBytesReceived) {
     Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
     poll_timeout = poll_ntp_data.ntp_timeout;
     ntp_time_validity = poll_ntp_data.ntp_time_validity;
+    cancel_ntp_poll_flag = true;
     start_poll_flag = true;
   }else if (cmd_id == reset_data){
     reset_data_flag = true;
@@ -463,7 +469,9 @@ void i2c_request() {
     t = timezones[current_settings.timezoneIdx].toLocal(rtc.getEpoch());
   }
 
-  buffer[0] = (byte)poll_successfull;
+  uint8_t combined_bool = poll_successfull + (polling_ntp * 2); //LSB poll suiccesfull, next to the right is wether polling_ntp is active
+
+  buffer[0] = (byte)combined_bool;
   buffer[1] = (byte)hour(t);
   buffer[2] = (byte)minute(t);
   buffer[3] = (byte)second(t);
@@ -638,7 +646,11 @@ void handleCaptive(){
 #pragma region ntp polling
 
 void startNtpPoll() {
+  Serial.println("");
   Serial.println("start ntp");
+  Serial.println("polling timeout s: " + String(poll_timeout));
+  Serial.println("ntp validity s: " + String(ntp_time_validity));
+  Serial.println("");
   wifi_feedback_2 = fail;
   ntp_service = NTPClass();
   poll_successfull = false;
