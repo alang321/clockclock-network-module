@@ -661,16 +661,6 @@ void cancelNtpPoll() {
 
 #pragma region eeprom
 
-void readRules(Timezone& tz, int address)
-{
-  EEPROM.get(address, tz);
-}
-
-void writeRules(Timezone tz, int address)
-{
-  EEPROM.put(address, tz);
-}
-
 void saveDataEEPROM()
 {
   Serial.println(current_settings.getPrintableString());
