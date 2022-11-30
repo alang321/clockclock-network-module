@@ -43,6 +43,7 @@ WebServer webServer(80);
 bool start_ap_flag = false;
 bool stop_ap_flag = false;
 bool ap_enabled = false;
+bool webServer_started = false;
 
 NTPClass ntp_service;
 bool start_poll_flag = false;
@@ -61,6 +62,9 @@ PicoEspTime rtc;
 enum connection_feedback {success = 0, fail = 1, not_yet_attempted = 2};
 uint8_t ntp_feedback = not_yet_attempted;
 uint8_t wifi_feedback = not_yet_attempted;
+
+//idk how to name, keeps track during one ntp cycle, this value gets passed on to wifi_feedback on timeout, but NOT on cancel
+uint8_t wifi_feedback_2 = not_yet_attempted; 
 
 #pragma region settings
 
@@ -212,13 +216,13 @@ cmd_poll_ntp_data poll_ntp_data;
 
 const String STYLE_HTML = R"rawliteral(
 <!DOCTYPE HTML><html><head>
-  <title>ClockClock</title>
+  <title>UhrUhr24</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
   body{color:white; background-color:#141414; font-family: Helvetica, Verdana, Arial, sans-serif}
   h1{text-align:center;}
   p{text-align:center;}
-  div{margin: 5%; background-color:#242424; padding:10px; border-radius:8px;}
+  div{margin: 5%; background-color:#242424; padding:10px; border-radius:14px;}
   br{display: block; margin: 10px 0; line-height:22px; content: " ";}
   .biglabel{font-size:20px; border-radius: 8px; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
   .smalllabel{border-radius: 8px; width:90%; padding:10px; display:block; margin-right:auto; margin-left:auto;}
@@ -238,9 +242,9 @@ const String CAPTIVE_FORM_HTML = R"rawliteral(<body>
     <br>
     <br>
     <form action="/credentials" method="POST">
-      <label class="biglabel" >Wi-Fi Daten (Zeitsynchronisierung):</label>
+      <label class="biglabel" >Wi-Fi Daten:</label>
       <br>
-      <input class="textbox" type="text" name="wifissid" id="wifissid" placeholder="WLAN SSID" value="*<*SSID*>*">
+      <input class="textbox" type="text" name="wifissid" id="wifissid" placeholder="Wi-Fi SSID" value="*<*SSID*>*">
       <br>
       <input class="textbox" type="text" name="wifipass" id="wifipass" placeholder="Passwort unverändert">
       <label class="smalllabel"><input type="checkbox" name="is_protected" id="is_protected" onclick="enableFields()" *<*IS_PROT*>*/> Geschütztes Netzwerk</label>
@@ -287,12 +291,13 @@ window.onload = enableFields;
 
 const String CAPTIVE_SUCCESS_HTML = R"rawliteral(<body>
   <div>
-    <h1>ClockClock</h1>
+    <h1>UhrUhr24</h1>
     <p>Daten Erfolgreich gepeichert, zum erneuten ändern den "Anpassen" Knopf drücken:</p>
     <p></p>
     <p>SSID: *<*SSID*>*</p>
     <p>Passwort: *<*PASS*>*</p>
     <p>Geschützt: *<*PROT*>*</p>
+    <p>Zeitzone: *<*TZ*>*</p>
     <p></p>
     <form action="/" method="POST">
       <input type="submit" value="Anpassen">
@@ -302,7 +307,7 @@ const String CAPTIVE_SUCCESS_HTML = R"rawliteral(<body>
 
 const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
   <div>
-    <h1>ClockClock</h1>
+    <h1>UhrUhr24</h1>
     <p>Beim speichern der Daten ist ein Fehler aufgetreten. (*<*Error*>*):</p>
     <p></p>
     <p></p>
@@ -365,14 +370,17 @@ void loop() {
     startCaptivePortal();
   }
 
+  if(webServer_started){
+    webServer.handleClient();
+  }
+
   if (ap_enabled){
     dnsServer.processNextRequest();
-    webServer.handleClient();
   }
   else if (polling_ntp){
     //todo, handle timeouts, overflow save millis webpage
     if(WiFi.status() == WL_CONNECTED){
-      wifi_feedback = success;
+      wifi_feedback_2 = success;
       if(!ntp_service.running()){
         ntp_service.begin("pool.ntp.org", "time.nist.gov");
         Serial.println("starting sntp service");
@@ -391,9 +399,7 @@ void loop() {
       if(!poll_successfull){
         ntp_feedback = fail;
       }
-      if(wifi_feedback != success){
-        wifi_feedback = fail;
-      }
+      wifi_feedback = wifi_feedback_2;
 
       Serial.println("ntp ended");
       cancelNtpPoll();
@@ -477,14 +483,15 @@ void startCaptivePortal() {
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP(ACCESS_POINT_NAME, ACCESS_POINT_PASSWORD);
 
-    // if DNSServer is started with "*" for domain name, it will reply with
-    // provided IP to all DNS request
     dnsServer.start(DNS_PORT, "*", apIP);
 
-    // replay to all requests with same HTML
-    webServer.on("/credentials", HTTP_POST, handleCredentials);
-    webServer.onNotFound(handleCaptive);
-    webServer.begin();
+    if(!webServer_started){
+      // reply to requests
+      webServer.on("/credentials", HTTP_POST, handleCredentials);
+      webServer.onNotFound(handleCaptive);
+      webServer.begin();
+      webServer_started = true;
+    }
   }
   else{
     Serial.println("ap already running");
@@ -497,7 +504,7 @@ void stopCaptivePortal() {
     ap_enabled = false;
     WiFi.mode(WIFI_OFF);
     dnsServer.stop();
-    webServer.stop();
+    //webServer.stop();
   }
   else{
     Serial.println("ap already stopped");
@@ -524,9 +531,9 @@ void handleCredentials(){
         current_settings.isProtected = webServer.hasArg("is_protected");
         current_settings.setSSIDString(webServer.arg("wifissid"));
         current_settings.setPassString(wifipass);
-        current_settings.timezoneIdx = webServer.arg("timezone").toInt();
+        current_settings.timezoneIdx = max(0, min(webServer.arg("timezone").toInt(), NUM_TIMEZONES - 1));
         current_settings.useGmtOffset = webServer.hasArg("gmt_offset_enabled");
-        current_settings.gmtOffset = webServer.arg("gmtOffset").toInt();
+        current_settings.gmtOffset = max(-12, min(webServer.arg("gmtOffset").toInt(), 12));
         
         if (webServer.hasArg("is_protected")){
           msg.replace("*<*PROT*>*", "Ja");
@@ -541,6 +548,16 @@ void handleCredentials(){
           msg.replace("*<*PASS*>*", "unverändert");
         }else{
           msg.replace("*<*PASS*>*", webServer.arg("wifipass"));
+        }
+
+        if(current_settings.useGmtOffset){
+          String symbol = "";
+          if(current_settings.gmtOffset >= 0){
+            symbol = "+";
+          }
+          msg.replace("*<*TZ*>*", ("GMT" + symbol + String(current_settings.gmtOffset)));
+        }else{
+          msg.replace("*<*TZ*>*", timezoneNames[current_settings.timezoneIdx]);
         }
         
         saveDataEEPROM();
@@ -564,6 +581,7 @@ void handleCredentials(){
 }
 
 void handleCaptive(){
+  Serial.println("Serving Settings Page");
   String form = CAPTIVE_FORM_HTML;
   form.replace("*<*SSID*>*", current_settings.getSSIDString());
   if(current_settings.isProtected){
@@ -621,6 +639,7 @@ void handleCaptive(){
 
 void startNtpPoll() {
   Serial.println("start ntp");
+  wifi_feedback_2 = fail;
   ntp_service = NTPClass();
   poll_successfull = false;
   polling_ntp = true;
