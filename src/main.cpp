@@ -24,17 +24,9 @@ void resetData();
 void readRules(Timezone& tz, int address);
 void writeRules(Timezone tz, int address);
 
-#define 
-
-#define MAX_COMMAND_LENGTH 4 //max length of a command data in bytes, used for checksum buffer
-#define REPLY_LENGTH 5 //length of the reply in bytes
-
 //i2c handlers
 void i2c_receive(int numBytesReceived);
 void i2c_request();
-
-bool verifyChecksum(byte (&buffer)[MAX_COMMAND_LENGTH + 2], uint8_t bufferLength);
-uint8_t getChecksum(byte (&buffer)[REPLY_LENGTH]);
 
 const int I2C_SDA_PIN = 8;
 const int I2C_SCL_PIN = 9;
@@ -206,8 +198,6 @@ const int NUM_TIMEZONES = 9;
 
 enum cmd_identifier {enable_ap = 0, poll_ntp = 1, reset_data = 2};
 
-#pragma pack(push, 1) // exact fit - no padding
-
 struct cmd_enable_ap_data {
   bool enable; //1bytes # true enables the acces point for configuration, false disables it
 };
@@ -216,8 +206,6 @@ struct cmd_poll_ntp_data {
   uint16_t ntp_timeout; //2bytes, timeout in s
   uint16_t ntp_time_validity; //2bytes, how long the retrieved time will be valid
 };
-
-#pragma pack(pop)
 
 cmd_enable_ap_data enable_ap_data;
 cmd_poll_ntp_data poll_ntp_data;
@@ -443,47 +431,32 @@ void PrintTime()
 #pragma region i2c handler
 
 void i2c_receive(int numBytesReceived) {
-  //verify correct number of bytes received
-  if(numBytesReceived >= 2 && numBytesReceived <= MAX_COMMAND_LENGTH + 2){
-    //verify checksum
-    byte buffer[MAX_COMMAND_LENGTH + 2];
-    Wire.readBytes((byte*) &buffer, numBytesReceived);
-    if(verifyChecksum(buffer, numBytesReceived)){
-      //verify command id
-      uint8_t cmd_id = 0;
-      cmd_id = static_cast<uint8_t>(buffer[0]);
+  uint8_t cmd_id = 0;
+  Wire.readBytes((byte*) &cmd_id, 1);
 
-      if (cmd_id == enable_ap){
-        Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
-        if (enable_ap_data.enable)
-        {
-          start_ap_flag = true;
-        }else{
-          stop_ap_flag = true;
-        }
-      }else if (cmd_id == poll_ntp){
-        Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
-        poll_timeout = poll_ntp_data.ntp_timeout;
-        ntp_time_validity = poll_ntp_data.ntp_time_validity;
-        cancel_ntp_poll_flag = true;
-        start_poll_flag = true;
-      }else if (cmd_id == reset_data){
-        reset_data_flag = true;
-      }
-    }
+  byte i2c_buffer[numBytesReceived - 1];
 
-  }
-  else{
-    //clear the bytes form the buffer
-    for(int i = 0; i < numBytesReceived; i++){
-        Wire.read();
+  if (cmd_id == enable_ap){
+    Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
+    if (enable_ap_data.enable)
+    {
+      start_ap_flag = true;
+    }else{
+      stop_ap_flag = true;
     }
-    return;
+  }else if (cmd_id == poll_ntp){
+    Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
+    poll_timeout = poll_ntp_data.ntp_timeout;
+    ntp_time_validity = poll_ntp_data.ntp_time_validity;
+    cancel_ntp_poll_flag = true;
+    start_poll_flag = true;
+  }else if (cmd_id == reset_data){
+    reset_data_flag = true;
   }
 }
 
 void i2c_request() {
-  byte buffer[REPLY_LENGTH];
+  byte buffer[4];
   rtc.read();
 
   time_t t = 0;
@@ -496,32 +469,14 @@ void i2c_request() {
     t = timezones[current_settings.timezoneIdx].toLocal(rtc.getEpoch());
   }
 
-  uint8_t combined_bool = poll_successfull + (polling_ntp * 2); //LSB poll suiccesfull, next from the right is wether polling_ntp is active
+  uint8_t combined_bool = poll_successfull + (polling_ntp * 2); //LSB poll suiccesfull, next to the right is wether polling_ntp is active
 
   buffer[0] = (byte)combined_bool;
   buffer[1] = (byte)hour(t);
   buffer[2] = (byte)minute(t);
   buffer[3] = (byte)second(t);
-  uint8_t checksum = getChecksum(buffer);
-  buffer[4] = checksum;
 
   Wire.write(buffer, 4);
-}
-
-bool verifyChecksum(byte (&buffer)[MAX_COMMAND_LENGTH + 2], uint8_t bufferLength){
-    uint8_t checksum = 0;
-    for(int i = 0; i < bufferLength - 1; i++){
-        checksum += buffer[i];
-    }
-    return checksum == buffer[bufferLength - 1];
-}
-
-uint8_t getChecksum(byte (&buffer)[REPLY_LENGTH]){
-    uint8_t checksum = 0;
-    for(int i = 0; i < REPLY_LENGTH - 1; i++){
-        checksum += buffer[i];
-    }
-    return checksum;
 }
 
 #pragma endregion
