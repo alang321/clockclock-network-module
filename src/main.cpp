@@ -14,15 +14,17 @@ void handleCaptive();
 void startNtpPoll();
 void stopCaptivePortal();
 void cancelNtpPoll();
+void begin_ntp(IPAddress s1, IPAddress s2, int timeout = 3600);
 void PrintTime();
+void writeStringToEEPROM(int addrOffset, const String &strToWrite);
+String readStringFromEEPROM(int addrOffset);
 void saveDataEEPROM();
 void readDataEEPROM();
 void resetData();
+void readRules(Timezone& tz, int address);
+void writeRules(Timezone tz, int address);
 
-#define MAX_HOTSPOT_ON_TIME_M 30 //max time in seconds the hotspot will be on, in case the turn off command is missed by chance
-
-#define MAX_NTP_TIMEOUT 1800 //max timeout in seconds
-#define MAX_NTP_TIME_VALIDITY 3600 //max time validity in seconds
+#define 
 
 #define MAX_COMMAND_LENGTH 4 //max length of a command data in bytes, used for checksum buffer
 #define REPLY_LENGTH 5 //length of the reply in bytes
@@ -367,9 +369,8 @@ void loop() {
 
   if(start_poll_flag){
     if(!ap_enabled){
-      stopCaptivePortal();
+      startNtpPoll();
     }
-    startNtpPoll();
     start_poll_flag = false;
   }
 
@@ -462,14 +463,6 @@ void i2c_receive(int numBytesReceived) {
         }
       }else if (cmd_id == poll_ntp){
         Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
-
-        if(poll_ntp_data.ntp_timeout > MAX_NTP_TIMEOUT){
-          poll_ntp_data.ntp_timeout = MAX_NTP_TIMEOUT;
-        }
-        if(poll_ntp_data.ntp_time_validity > MAX_NTP_TIME_VALIDITY){
-          poll_ntp_data.ntp_time_validity = MAX_NTP_TIME_VALIDITY;
-        }
-
         poll_timeout = poll_ntp_data.ntp_timeout;
         ntp_time_validity = poll_ntp_data.ntp_time_validity;
         cancel_ntp_poll_flag = true;
@@ -482,8 +475,9 @@ void i2c_receive(int numBytesReceived) {
   }
   else{
     //clear the bytes form the buffer
-    byte discard_buffer[numBytesReceived];
-    Wire.readBytes((byte *)&discard_buffer, numBytesReceived);
+    for(int i = 0; i < numBytesReceived; i++){
+        Wire.read();
+    }
     return;
   }
 }
