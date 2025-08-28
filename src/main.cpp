@@ -21,12 +21,23 @@ String readStringFromEEPROM(int addrOffset);
 void saveDataEEPROM();
 void readDataEEPROM();
 void resetData();
-void readRules(Timezone& tz, int address);
-void writeRules(Timezone tz, int address);
+
+#define DEBUG false
+
+//#define MAX_HOTSPOT_ON_TIME_M 30 //max time in seconds the hotspot will be on, in case the turn off command is missed by chance
+
+#define MAX_NTP_TIMEOUT 1800 //max timeout in seconds
+#define MAX_NTP_TIME_VALIDITY 3600 //max time validity in seconds
+
+#define MAX_COMMAND_LENGTH 5 //max length of a command data in bytes, used for checksum buffer
+#define REPLY_LENGTH 5 //length of the reply in bytes
 
 //i2c handlers
 void i2c_receive(int numBytesReceived);
 void i2c_request();
+
+bool verifyChecksum(byte (&buffer)[MAX_COMMAND_LENGTH + 1], uint8_t bufferLength);
+uint8_t getChecksum(byte (&buffer)[REPLY_LENGTH]);
 
 const int I2C_SDA_PIN = 8;
 const int I2C_SCL_PIN = 9;
@@ -199,10 +210,12 @@ const int NUM_TIMEZONES = 9;
 enum cmd_identifier {enable_ap = 0, poll_ntp = 1, reset_data = 2};
 
 struct cmd_enable_ap_data {
+  uint8_t cmd_id;
   bool enable; //1bytes # true enables the acces point for configuration, false disables it
 };
 
 struct cmd_poll_ntp_data {
+  uint8_t cmd_id;
   uint16_t ntp_timeout; //2bytes, timeout in s
   uint16_t ntp_time_validity; //2bytes, how long the retrieved time will be valid
 };
@@ -323,8 +336,10 @@ const String CAPTIVE_ERROR_HTML = R"rawliteral(<body>
 
 void setup() {
   //todo load ssid password and if protected from flash
-  Serial.begin(9600);
-  Serial.println("test");
+  if(DEBUG){
+    Serial.begin(9600);
+    Serial.println("test");
+  }
 
   delay(4000);
 
@@ -336,7 +351,7 @@ void setup() {
   //Initialize as i2c slave
   Wire.setSCL(I2C_SCL_PIN);
   Wire.setSDA(I2C_SDA_PIN);  
-  Wire.setClock(100000); 
+  Wire.setClock(25000); 
   Wire.begin(I2C_ADDRESS); 
   Wire.onReceive(i2c_receive);
   Wire.onRequest(i2c_request);
@@ -348,6 +363,18 @@ void loop() {
   if(reset_data_flag){
     reset_data_flag = false;
     resetData();
+
+    //if ap is enabled, restart it
+    if(ap_enabled){
+      stopCaptivePortal();
+      startCaptivePortal();
+    }
+
+    //if ntp is polling, restart it
+    if(polling_ntp){
+      cancelNtpPoll();
+      startNtpPoll();
+    }
   }
   
   if(cancel_ntp_poll_flag){
@@ -356,9 +383,8 @@ void loop() {
   }
 
   if(start_poll_flag){
-    if(!ap_enabled){
-      startNtpPoll();
-    }
+    stopCaptivePortal();
+    startNtpPoll();
     start_poll_flag = false;
   }
 
@@ -389,13 +415,13 @@ void loop() {
       wifi_feedback_2 = success;
       if(!ntp_service.running()){
         ntp_service.begin("pool.ntp.org", "time.nist.gov");
-        Serial.println("starting sntp service");
+        if(DEBUG) Serial.println("starting sntp service");
       }
       
       if(time(nullptr) > (poll_starttime + poll_timeout + 31536000)){ //if timesetting has occured, one year after 2010 or smth
         ntp_feedback = success;
         poll_successfull = true;
-        Serial.println(("Succesfully polled, time will be valid for (s)" + ntp_time_validity));
+        if(DEBUG) Serial.println(("Succesfully polled, time will be valid for (s)" + ntp_time_validity));
         rtc.read();
         PrintTime();
         expiry_time = time(nullptr) + ntp_time_validity;
@@ -407,13 +433,13 @@ void loop() {
       }
       wifi_feedback = wifi_feedback_2;
 
-      Serial.println("ntp ended");
+      if(DEBUG) Serial.println("ntp ended");
       cancelNtpPoll();
     }
   }
 
   if(poll_successfull && (time(nullptr) > expiry_time)){
-    Serial.println("Invalidating ntp time since timeout has been reached");
+    if(DEBUG) Serial.println("Invalidating ntp time since timeout has been reached");
     poll_successfull = false;
     if(polling_ntp){
       cancelNtpPoll();
@@ -423,7 +449,7 @@ void loop() {
 
 void PrintTime()
 { 
-  Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));
+  if(DEBUG) Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));
 } 
 
 #pragma endregion
@@ -431,18 +457,41 @@ void PrintTime()
 #pragma region i2c handler
 
 void i2c_receive(int numBytesReceived) {
-  uint8_t cmd_id = 0;
-  Wire.readBytes((byte*) &cmd_id, 1);
+  //verify correct number of bytes received
+  if(numBytesReceived >= 2 && numBytesReceived <= MAX_COMMAND_LENGTH + 1){
+    //verify checksum
+    byte buffer[MAX_COMMAND_LENGTH + 1];
+    Wire.readBytes((byte*) &buffer, numBytesReceived);
+    if(verifyChecksum(buffer, numBytesReceived)){
+      //verify command id
+      uint8_t cmd_id = 0;
+      cmd_id = static_cast<uint8_t>(buffer[0]);
 
-  byte i2c_buffer[numBytesReceived - 1];
+      if (cmd_id == enable_ap && numBytesReceived == sizeof(enable_ap_data) + 1){
+        memcpy(&enable_ap_data, buffer, sizeof(enable_ap_data));
+        if (enable_ap_data.enable)
+        {
+          start_ap_flag = true;
+        }else{
+          stop_ap_flag = true;
+        }
+      }else if (cmd_id == poll_ntp && numBytesReceived == sizeof(poll_ntp_data) + 1){
+        memcpy(&poll_ntp_data, buffer, sizeof(poll_ntp_data));
 
-  if (cmd_id == enable_ap){
-    Wire.readBytes((byte*) &enable_ap_data, numBytesReceived - 1);
-    if (enable_ap_data.enable)
-    {
-      start_ap_flag = true;
-    }else{
-      stop_ap_flag = true;
+        if(poll_ntp_data.ntp_timeout > MAX_NTP_TIMEOUT){
+          poll_ntp_data.ntp_timeout = MAX_NTP_TIMEOUT;
+        }
+        if(poll_ntp_data.ntp_time_validity > MAX_NTP_TIME_VALIDITY){
+          poll_ntp_data.ntp_time_validity = MAX_NTP_TIME_VALIDITY;
+        }
+
+        poll_timeout = poll_ntp_data.ntp_timeout;
+        ntp_time_validity = poll_ntp_data.ntp_time_validity;
+        cancel_ntp_poll_flag = true;
+        start_poll_flag = true;
+      }else if (cmd_id == reset_data && numBytesReceived == 2){
+        reset_data_flag = true;
+      }
     }
   }else if (cmd_id == poll_ntp){
     Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
@@ -476,7 +525,23 @@ void i2c_request() {
   buffer[2] = (byte)minute(t);
   buffer[3] = (byte)second(t);
 
-  Wire.write(buffer, 4);
+  Wire.write(buffer, REPLY_LENGTH);
+}
+
+bool verifyChecksum(byte (&buffer)[MAX_COMMAND_LENGTH + 1], uint8_t bufferLength){
+    uint8_t checksum = 0;
+    for(int i = 0; i < bufferLength - 1; i++){
+        checksum += buffer[i];
+    }
+    return checksum == buffer[bufferLength - 1];
+}
+
+uint8_t getChecksum(byte (&buffer)[REPLY_LENGTH]){
+    uint8_t checksum = 0;
+    for(int i = 0; i < REPLY_LENGTH - 1; i++){
+        checksum += buffer[i];
+    }
+    return checksum;
 }
 
 #pragma endregion
@@ -485,7 +550,7 @@ void i2c_request() {
 
 void startCaptivePortal() {
   if(!ap_enabled){
-    Serial.println("start ap");
+    if(DEBUG) Serial.println("start ap");
     ap_enabled = true;
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
@@ -502,20 +567,20 @@ void startCaptivePortal() {
     }
   }
   else{
-    Serial.println("ap already running");
+    if(DEBUG) Serial.println("ap already running");
   }
 }
 
 void stopCaptivePortal() {
   if(ap_enabled){
-    Serial.println("stop ap");
+    if(DEBUG) Serial.println("stop ap");
     ap_enabled = false;
     WiFi.mode(WIFI_OFF);
     dnsServer.stop();
     //webServer.stop();
   }
   else{
-    Serial.println("ap already stopped");
+    if(DEBUG) Serial.println("ap already stopped");
   }
 }
 
@@ -523,9 +588,11 @@ void handleCredentials(){
   String msg = CAPTIVE_SUCCESS_HTML;
 
   if (webServer.hasArg("wifissid") && webServer.hasArg("wifipass") && webServer.hasArg("timezone") && webServer.hasArg("gmtOffset")){
-    Serial.println(webServer.arg("wifissid"));
-    Serial.println(webServer.arg("wifipass"));
-    Serial.println(webServer.hasArg("is_protected"));
+    if(DEBUG){
+      Serial.println(webServer.arg("wifissid"));
+      Serial.println(webServer.arg("wifipass"));
+      Serial.println(webServer.hasArg("is_protected"));
+    }
 
     String wifipass;
     if(webServer.arg("wifipass") == ""){
@@ -589,7 +656,7 @@ void handleCredentials(){
 }
 
 void handleCaptive(){
-  Serial.println("Serving Settings Page");
+  if(DEBUG) Serial.println("Serving Settings Page");
   String form = CAPTIVE_FORM_HTML;
   form.replace("*<*SSID*>*", current_settings.getSSIDString());
   if(current_settings.isProtected){
@@ -646,11 +713,13 @@ void handleCaptive(){
 #pragma region ntp polling
 
 void startNtpPoll() {
-  Serial.println("");
-  Serial.println("start ntp");
-  Serial.println("polling timeout s: " + String(poll_timeout));
-  Serial.println("ntp validity s: " + String(ntp_time_validity));
-  Serial.println("");
+  if(DEBUG){
+    Serial.println("");
+    Serial.println("start ntp");
+    Serial.println("polling timeout s: " + String(poll_timeout));
+    Serial.println("ntp validity s: " + String(ntp_time_validity));
+    Serial.println("");
+  }
   wifi_feedback_2 = fail;
   ntp_service = NTPClass();
   poll_successfull = false;
@@ -680,11 +749,14 @@ void startNtpPoll() {
 }
 
 void cancelNtpPoll() {
-  Serial.println("stop ntp");
-  polling_ntp = false;
-  sntp_stop(); //stops the sntp service used by NTPClass
-  if(!ap_enabled){
-    WiFi.mode(WIFI_OFF);
+  if (polling_ntp)
+  {
+    if(DEBUG) Serial.println("stop ntp");
+    polling_ntp = false;
+    sntp_stop(); //stops the sntp service used by NTPClass
+    if(!ap_enabled){
+      WiFi.mode(WIFI_OFF);
+    }
   }
 }
 
@@ -694,7 +766,7 @@ void cancelNtpPoll() {
 
 void saveDataEEPROM()
 {
-  Serial.println(current_settings.getPrintableString());
+  if(DEBUG) Serial.println(current_settings.getPrintableString());
   EEPROM.put(ADDRESS_SETTINGS, current_settings);
 
   EEPROM.commit();
@@ -703,7 +775,7 @@ void saveDataEEPROM()
 void readDataEEPROM()
 {
   EEPROM.get(ADDRESS_SETTINGS, current_settings);
-  Serial.println(current_settings.getPrintableString());
+  if(DEBUG) Serial.println(current_settings.getPrintableString());
 }
 
 void resetData()
