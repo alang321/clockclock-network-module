@@ -102,20 +102,16 @@ struct settings {
     timezoneIdx = tzIDX;
   }
 
-  void setSSIDString(String ssidStr){
-    ssidLength = ssidStr.length();
-
-    for (int i = 0; i < ssidLength; i++) {
-      ssid[i] = ssidStr[i];
-    }
+  void setSSIDString(String ssidStr) {
+    // Ensure we don't write past the end of the buffer
+    ssidLength = min((int)ssidStr.length(), 32); 
+    // Copy the string and add the null terminator
+    ssidStr.toCharArray(ssid, ssidLength + 1); 
   }
 
-  void setPassString(String passStr){
-    passLength = passStr.length();
-
-    for (int i = 0; i < passLength; i++) {
-      pass[i] = passStr[i];
-    }
+    void setPassString(String passStr) {
+    passLength = min((int)passStr.length(), 32);
+    passStr.toCharArray(pass, passLength + 1);
   }
 
   String getSSIDString(){
