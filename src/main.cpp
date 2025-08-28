@@ -14,10 +14,7 @@ void handleCaptive();
 void startNtpPoll();
 void stopCaptivePortal();
 void cancelNtpPoll();
-void begin_ntp(IPAddress s1, IPAddress s2, int timeout = 3600);
 void PrintTime();
-void writeStringToEEPROM(int addrOffset, const String &strToWrite);
-String readStringFromEEPROM(int addrOffset);
 void saveDataEEPROM();
 void readDataEEPROM();
 void resetData();
@@ -209,6 +206,8 @@ const int NUM_TIMEZONES = 9;
 
 enum cmd_identifier {enable_ap = 0, poll_ntp = 1, reset_data = 2};
 
+#pragma pack(push, 1) // exact fit - no padding
+
 struct cmd_enable_ap_data {
   uint8_t cmd_id;
   bool enable; //1bytes # true enables the acces point for configuration, false disables it
@@ -219,6 +218,8 @@ struct cmd_poll_ntp_data {
   uint16_t ntp_timeout; //2bytes, timeout in s
   uint16_t ntp_time_validity; //2bytes, how long the retrieved time will be valid
 };
+
+#pragma pack(pop)
 
 cmd_enable_ap_data enable_ap_data;
 cmd_poll_ntp_data poll_ntp_data;
@@ -493,19 +494,18 @@ void i2c_receive(int numBytesReceived) {
         reset_data_flag = true;
       }
     }
-  }else if (cmd_id == poll_ntp){
-    Wire.readBytes((byte*) &poll_ntp_data, numBytesReceived - 1);
-    poll_timeout = poll_ntp_data.ntp_timeout;
-    ntp_time_validity = poll_ntp_data.ntp_time_validity;
-    cancel_ntp_poll_flag = true;
-    start_poll_flag = true;
-  }else if (cmd_id == reset_data){
-    reset_data_flag = true;
+
+  }
+  else{
+    //clear the bytes form the buffer
+    byte discard_buffer[numBytesReceived];
+    Wire.readBytes((byte *)&discard_buffer, numBytesReceived);
+    return;
   }
 }
 
 void i2c_request() {
-  byte buffer[4];
+  byte buffer[REPLY_LENGTH];
   rtc.read();
 
   time_t t = 0;
@@ -518,12 +518,14 @@ void i2c_request() {
     t = timezones[current_settings.timezoneIdx].toLocal(rtc.getEpoch());
   }
 
-  uint8_t combined_bool = poll_successfull + (polling_ntp * 2); //LSB poll suiccesfull, next to the right is wether polling_ntp is active
+  uint8_t combined_bool = poll_successfull + (polling_ntp * 2); //LSB poll suiccesfull, next from the right is wether polling_ntp is active
 
   buffer[0] = (byte)combined_bool;
   buffer[1] = (byte)hour(t);
   buffer[2] = (byte)minute(t);
   buffer[3] = (byte)second(t);
+  uint8_t checksum = getChecksum(buffer);
+  buffer[4] = checksum;
 
   Wire.write(buffer, REPLY_LENGTH);
 }
