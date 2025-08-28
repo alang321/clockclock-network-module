@@ -399,7 +399,7 @@ void PrintTime()
 
 #pragma endregion
 
-#pragma refion state machine
+#pragma region state machine
 
 void changeState(DeviceState newState) {
   if (newState == currentState) return; // No change needed
